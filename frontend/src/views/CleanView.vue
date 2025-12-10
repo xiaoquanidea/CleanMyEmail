@@ -1,11 +1,11 @@
 <script lang="ts" setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import {
   NLayout, NLayoutSider, NLayoutContent, NCard, NButton, NSpace, NTree, NDatePicker,
   NCheckbox, NProgress, NIcon, NTag, NSpin, NAlert, NScrollbar, NInputNumber, NInput,
-  NSelect, NCollapse, NCollapseItem, NModal, NResult, NSkeleton
+  NSelect, NCollapse, NCollapseItem, NModal, NResult, NSkeleton, NText
 } from 'naive-ui'
 import { ArrowBack, Trash, RefreshOutline } from '@vicons/ionicons5'
 import { StartClean, CancelClean, GetAccount } from '../../wailsjs/go/main/App'
@@ -56,6 +56,7 @@ const filterSender = ref('')
 const filterSubject = ref('')
 const filterSize = ref<string | null>(null)
 const filterRead = ref<string | null>(null)
+const enableClientFallback = ref(false) // 启用客户端回退
 
 // 大小筛选选项
 const sizeOptions = [
@@ -82,6 +83,12 @@ const cleanResult = ref<any>(null)
 const showConfirmModal = ref(false)
 const lastError = ref<string | null>(null)
 const loadError = ref<string | null>(null)
+// 累计统计（跨文件夹）
+const totalMatched = ref(0)
+const totalDeleted = ref(0)
+const folderMatchedMap = ref<Map<string, number>>(new Map())
+// 日志滚动容器引用
+const logScrollbarRef = ref<InstanceType<typeof NScrollbar> | null>(null)
 
 // 快捷日期选项
 const dateShortcuts = {
@@ -125,6 +132,37 @@ const getAllFolderKeys = (nodes: FolderTreeNode[]): string[] => {
   }
   traverse(nodes)
   return keys
+}
+
+// 获取选中的文件夹（包括父节点）
+// Naive UI 的 cascade 模式下，勾选父节点只会返回叶子节点的 key
+// 需要检查：如果某个父节点的所有子节点都被选中，则该父节点也应该被包含
+const getSelectedFolders = (): string[] => {
+  const selected = new Set(checkedKeys.value)
+  const result = new Set<string>()
+
+  const traverse = (nodes: FolderTreeNode[]) => {
+    for (const node of nodes) {
+      if (node.children && node.children.length > 0) {
+        // 递归处理子节点
+        traverse(node.children)
+        // 检查是否所有子节点都被选中
+        const allChildrenSelected = node.children.every(child =>
+          selected.has(child.key) || result.has(child.key)
+        )
+        if (allChildrenSelected && !node.disabled) {
+          result.add(node.key)
+        }
+      }
+      // 叶子节点直接检查
+      if (selected.has(node.key) && !node.disabled) {
+        result.add(node.key)
+      }
+    }
+  }
+
+  traverse(folderTree.value)
+  return Array.from(result)
 }
 
 // 是否全选
@@ -236,11 +274,19 @@ const doStartClean = async () => {
   progress.value = null
   progressLogs.value = []
   cleanResult.value = null
+  // 重置累计统计
+  totalMatched.value = 0
+  totalDeleted.value = 0
+  folderMatchedMap.value.clear()
 
   try {
+    // 获取选中的文件夹（包括父节点）
+    const folders = getSelectedFolders()
+    console.log('[DEBUG] 选中的文件夹:', folders)
+
     await StartClean({
       accountId: parseInt(props.accountId),
-      folders: checkedKeys.value,
+      folders: folders,
       startDate: startDate.value ? formatDate(startDate.value) : '',
       endDate: formatDate(endDate.value!),
       previewOnly: previewOnly.value,
@@ -249,7 +295,8 @@ const doStartClean = async () => {
       filterSender: filterSender.value,
       filterSubject: filterSubject.value,
       filterSize: filterSize.value || '',
-      filterRead: filterRead.value || ''
+      filterRead: filterRead.value || '',
+      enableClientFallback: enableClientFallback.value
     })
   } catch (error: any) {
     message.error(`启动清理失败: ${error}`)
@@ -261,13 +308,36 @@ const handleCancelClean = () => {
   CancelClean()
 }
 
+// 滚动日志到底部
+const scrollLogsToBottom = () => {
+  nextTick(() => {
+    if (logScrollbarRef.value) {
+      logScrollbarRef.value.scrollTo({ top: 999999, behavior: 'smooth' })
+    }
+  })
+}
+
 const onProgress = (data: CleanProgress) => {
   progress.value = data
+
+  // 更新累计统计
+  const folder = data.currentFolder
+  if (folder && data.matchedCount > 0) {
+    // 只在首次收到该文件夹的匹配数时累加
+    if (!folderMatchedMap.value.has(folder)) {
+      folderMatchedMap.value.set(folder, data.matchedCount)
+      totalMatched.value += data.matchedCount
+    }
+  }
+  totalDeleted.value = data.deletedCount
+
   if (data.message) {
     progressLogs.value.push({
       time: formatTimestamp(),
       message: data.message
     })
+    // 自动滚动到底部
+    scrollLogsToBottom()
   }
 }
 
@@ -359,167 +429,222 @@ onUnmounted(() => {
     </n-layout-sider>
 
     <!-- 右侧操作区 -->
-    <n-layout-content content-style="padding: 24px;" class="content">
-      <n-card title="筛选条件" size="small" style="margin-bottom: 16px;">
-        <n-space vertical :size="12">
-          <div class="filter-row">
-            <label class="filter-label">开始时间：</label>
-            <n-date-picker
-              v-model:value="startDate"
-              type="date"
-              clearable
-              :shortcuts="dateShortcuts"
-              placeholder="可选，不填则不限制"
-              style="width: 180px;"
-            />
-            <label class="filter-label" style="margin-left: 24px;">结束时间：</label>
-            <n-date-picker
-              v-model:value="endDate"
-              type="date"
-              clearable
-              :shortcuts="dateShortcuts"
-              placeholder="必填"
-              style="width: 180px;"
-            />
-          </div>
-          <!-- 高级筛选条件 -->
-          <n-collapse>
-            <n-collapse-item title="高级筛选" name="advanced">
-              <n-space vertical :size="12">
-                <div class="filter-row">
-                  <label class="filter-label">发件人：</label>
-                  <n-input
-                    v-model:value="filterSender"
-                    placeholder="jenny.ji@yunlsp.com"
-                    :disabled="cleaning"
-                    style="width: 350px;"
-                  />
-                </div>
-                <div class="filter-row">
-                  <label class="filter-label">主题包含：</label>
-                  <n-input
-                    v-model:value="filterSubject"
-                    placeholder="主题关键词"
-                    :disabled="cleaning"
-                    style="width: 350px;"
-                  />
-                </div>
-                <div class="filter-row">
-                  <label class="filter-label">邮件大小：</label>
-                  <n-select
-                    v-model:value="filterSize"
-                    :options="sizeOptions"
-                    :disabled="cleaning"
-                    placeholder="请选择"
-                    style="width: 150px;"
-                  />
-                  <label class="filter-label" style="margin-left: 24px;">已读状态：</label>
-                  <n-select
-                    v-model:value="filterRead"
-                    :options="readOptions"
-                    :disabled="cleaning"
-                    placeholder="请选择"
-                    style="width: 120px;"
-                  />
-                </div>
+    <n-layout-content content-style="padding: 16px;" class="content">
+      <n-scrollbar style="height: calc(100vh - 32px);">
+        <!-- 进度显示（清理时置顶） -->
+        <n-card v-if="cleaning || progressLogs.length > 0" size="small" class="progress-card" :class="{ 'is-cleaning': cleaning }">
+          <template #header>
+            <div class="progress-header">
+              <span>{{ cleaning ? '🔄 清理中...' : '📋 清理日志' }}</span>
+              <n-space v-if="progress" :size="8">
+                <n-tag :type="previewOnly ? 'warning' : 'error'" size="small">
+                  {{ previewOnly ? '预览模式' : '删除模式' }}
+                </n-tag>
+                <span class="progress-time">{{ progress.elapsedSeconds?.toFixed(1) || 0 }}s</span>
               </n-space>
-            </n-collapse-item>
-          </n-collapse>
+            </div>
+          </template>
 
-          <div class="filter-row">
-            <label class="filter-label">批处理大小：</label>
-            <n-input-number
-              v-model:value="batchSize"
-              :min="100"
-              :max="2000"
-              :step="100"
-              :disabled="cleaning"
-              style="width: 150px;"
-            />
-            <label class="filter-label" style="margin-left: 24px;">并发数：</label>
-            <n-input-number
-              v-model:value="maxConcurrency"
-              :min="1"
-              :max="10"
-              :disabled="cleaning"
-              style="width: 120px;"
-            />
-          </div>
-          <n-checkbox v-model:checked="previewOnly">
-            仅预览（不实际删除）
-          </n-checkbox>
-        </n-space>
-      </n-card>
-
-      <n-card title="操作" size="small" style="margin-bottom: 16px;">
-        <n-space>
-          <n-button
-            type="primary"
-            :loading="cleaning"
-            :disabled="checkedKeys.length === 0 || !endDate"
-            @click="handleStartClean"
-          >
-            <template #icon><n-icon><Trash /></n-icon></template>
-            {{ previewOnly ? '预览清理' : '开始清理' }}
-          </n-button>
-          <n-button v-if="cleaning" @click="handleCancelClean">
-            取消
-          </n-button>
-        </n-space>
-        <div v-if="checkedKeys.length > 0" style="margin-top: 8px; color: #666;">
-          已选择 {{ checkedKeys.length }} 个文件夹
-        </div>
-      </n-card>
-
-      <!-- 清理错误提示 -->
-      <n-alert v-if="lastError && !cleaning" type="error" style="margin-bottom: 16px;" closable @close="lastError = null">
-        <template #header>清理失败</template>
-        {{ lastError }}
-        <n-button size="small" type="primary" style="margin-left: 12px;" @click="doStartClean">
-          重试
-        </n-button>
-      </n-alert>
-
-      <!-- 清理完成统计摘要 -->
-      <n-card v-if="cleanResult && !cleaning" title="清理完成" size="small" style="margin-bottom: 16px;">
-        <n-space vertical>
-          <n-space>
-            <n-tag type="success" size="large">
-              {{ cleanResult.status === 'completed' ? '✓ 完成' : cleanResult.status === 'cancelled' ? '⚠ 已取消' : '✗ 失败' }}
-            </n-tag>
-          </n-space>
-          <n-space :size="24">
-            <div><strong>删除邮件：</strong>{{ cleanResult.totalDeleted }} 封</div>
-            <div><strong>处理文件夹：</strong>{{ cleanResult.folderStats?.length || 0 }} 个</div>
-            <div><strong>耗时：</strong>{{ cleanResult.duration?.toFixed(1) || 0 }}s</div>
-          </n-space>
-          <n-button size="small" @click="cleanResult = null">关闭</n-button>
-        </n-space>
-      </n-card>
-
-      <!-- 进度显示 -->
-      <n-card v-if="progress || progressLogs.length > 0" title="清理进度" size="small">
-        <n-progress
-          v-if="progress"
-          type="line"
-          :percentage="progressPercent"
-          :status="progress.status === 'completed' ? 'success' : 'default'"
-        />
-        <div v-if="progress" style="margin: 8px 0;">
-          <n-tag type="info">已删除: {{ progress.deletedCount }} 封</n-tag>
-          <span style="margin-left: 8px; color: #666;">
-            耗时: {{ progress.elapsedSeconds.toFixed(1) }}s
-          </span>
-        </div>
-        <n-scrollbar style="max-height: 300px; margin-top: 12px;">
-          <div class="progress-logs">
-            <div v-for="(log, index) in progressLogs" :key="index" class="log-item">
-              <span class="log-time">{{ log.time }}</span>
-              <span class="log-message">{{ log.message }}</span>
+          <!-- 统计信息 -->
+          <div v-if="progress || cleanResult" class="stats-bar">
+            <div class="stat-item">
+              <span class="stat-value matched">{{ totalMatched }}</span>
+              <span class="stat-label">匹配</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value deleted">{{ totalDeleted }}</span>
+              <span class="stat-label">已删除</span>
+            </div>
+            <div v-if="!previewOnly && totalMatched > 0" class="stat-item">
+              <span class="stat-value remaining">{{ totalMatched - totalDeleted }}</span>
+              <span class="stat-label">剩余</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value folders">{{ progress?.folderIndex || 0 }}/{{ progress?.totalFolders || 0 }}</span>
+              <span class="stat-label">文件夹</span>
             </div>
           </div>
-        </n-scrollbar>
-      </n-card>
+
+          <!-- 进度条 -->
+          <n-progress
+            v-if="progress"
+            type="line"
+            :percentage="progressPercent"
+            :status="progress.status === 'completed' ? 'success' : 'default'"
+            :show-indicator="false"
+            style="margin: 8px 0;"
+          />
+
+          <!-- 当前操作 -->
+          <div v-if="progress?.message" class="current-action">
+            {{ progress.message }}
+          </div>
+
+          <!-- 日志列表 -->
+          <n-scrollbar ref="logScrollbarRef" style="max-height: 200px; margin-top: 8px;">
+            <div class="progress-logs">
+              <div v-for="(log, index) in progressLogs.slice(-50)" :key="index" class="log-item">
+                <span class="log-time">{{ log.time }}</span>
+                <span class="log-message">{{ log.message }}</span>
+              </div>
+            </div>
+          </n-scrollbar>
+
+          <!-- 取消按钮 -->
+          <div v-if="cleaning" style="margin-top: 12px; text-align: right;">
+            <n-button size="small" @click="handleCancelClean">取消清理</n-button>
+          </div>
+        </n-card>
+
+        <!-- 清理完成统计 -->
+        <n-alert
+          v-if="cleanResult && !cleaning"
+          :type="cleanResult.status === 'completed' ? 'success' : cleanResult.status === 'cancelled' ? 'warning' : 'error'"
+          style="margin-bottom: 12px;"
+          closable
+          @close="cleanResult = null"
+        >
+          <template #header>
+            {{ cleanResult.status === 'completed' ? '清理完成' : cleanResult.status === 'cancelled' ? '已取消' : '清理失败' }}
+          </template>
+          <n-space :size="24">
+            <span>删除: <strong>{{ cleanResult.totalDeleted }}</strong> 封</span>
+            <span>文件夹: <strong>{{ cleanResult.folderStats?.length || 0 }}</strong> 个</span>
+            <span>耗时: <strong>{{ cleanResult.duration?.toFixed(1) || 0 }}</strong>s</span>
+          </n-space>
+        </n-alert>
+
+        <!-- 清理错误提示 -->
+        <n-alert v-if="lastError && !cleaning" type="error" style="margin-bottom: 12px;" closable @close="lastError = null">
+          <template #header>清理失败</template>
+          {{ lastError }}
+          <n-button size="small" type="primary" style="margin-left: 12px;" @click="doStartClean">重试</n-button>
+        </n-alert>
+
+        <!-- 筛选条件 -->
+        <n-card size="small" style="margin-bottom: 12px;" :collapsed="cleaning">
+          <template #header>
+            <div class="card-header-with-action">
+              <span>筛选条件</span>
+              <n-space>
+                <n-checkbox v-model:checked="previewOnly" :disabled="cleaning">
+                  仅预览
+                </n-checkbox>
+                <n-button
+                  :type="previewOnly ? 'primary' : 'error'"
+                  size="small"
+                  :loading="cleaning"
+                  :disabled="checkedKeys.length === 0 || !endDate"
+                  @click="handleStartClean"
+                >
+                  <template #icon><n-icon><Trash /></n-icon></template>
+                  {{ previewOnly ? '预览' : '删除' }} ({{ checkedKeys.length }})
+                </n-button>
+              </n-space>
+            </div>
+          </template>
+
+          <n-space vertical :size="8">
+            <!-- 日期行 -->
+            <div class="filter-row">
+              <label class="filter-label">时间范围：</label>
+              <n-date-picker
+                v-model:value="startDate"
+                type="date"
+                clearable
+                :shortcuts="dateShortcuts"
+                placeholder="开始（可选）"
+                :disabled="cleaning"
+                style="width: 160px;"
+              />
+              <span style="margin: 0 8px; color: #999;">至</span>
+              <n-date-picker
+                v-model:value="endDate"
+                type="date"
+                clearable
+                :shortcuts="dateShortcuts"
+                placeholder="结束（必填）"
+                :disabled="cleaning"
+                style="width: 160px;"
+              />
+            </div>
+
+            <!-- 高级筛选 -->
+            <n-collapse :disabled="cleaning">
+              <n-collapse-item title="高级筛选" name="advanced">
+                <n-space vertical :size="8">
+                  <div class="filter-row">
+                    <label class="filter-label">发件人：</label>
+                    <n-input
+                      v-model:value="filterSender"
+                      placeholder="多个用逗号分隔"
+                      :disabled="cleaning"
+                      style="flex: 1; max-width: 400px;"
+                    />
+                  </div>
+                  <div class="filter-row">
+                    <label class="filter-label">主题包含：</label>
+                    <n-input
+                      v-model:value="filterSubject"
+                      placeholder="关键词"
+                      :disabled="cleaning"
+                      style="flex: 1; max-width: 400px;"
+                    />
+                  </div>
+                  <div class="filter-row">
+                    <label class="filter-label">邮件大小：</label>
+                    <n-select
+                      v-model:value="filterSize"
+                      :options="sizeOptions"
+                      :disabled="cleaning"
+                      placeholder="不限"
+                      style="width: 130px;"
+                    />
+                    <label class="filter-label" style="margin-left: 16px; width: auto;">已读：</label>
+                    <n-select
+                      v-model:value="filterRead"
+                      :options="readOptions"
+                      :disabled="cleaning"
+                      placeholder="不限"
+                      style="width: 100px;"
+                    />
+                  </div>
+                  <div class="filter-row">
+                    <label class="filter-label">批处理：</label>
+                    <n-input-number
+                      v-model:value="batchSize"
+                      :min="100"
+                      :max="2000"
+                      :step="100"
+                      :disabled="cleaning"
+                      style="width: 120px;"
+                    />
+                    <label class="filter-label" style="margin-left: 16px; width: auto;">并发：</label>
+                    <n-input-number
+                      v-model:value="maxConcurrency"
+                      :min="1"
+                      :max="10"
+                      :disabled="cleaning"
+                      style="width: 80px;"
+                    />
+                  </div>
+                  <div class="filter-row">
+                    <n-checkbox
+                      v-model:checked="enableClientFallback"
+                      :disabled="cleaning"
+                    >
+                      启用客户端回退
+                    </n-checkbox>
+                    <n-text depth="3" style="margin-left: 8px; font-size: 12px;">
+                      （当邮件服务器不支持发件人/主题搜索时，在本地过滤，速度较慢）
+                    </n-text>
+                  </div>
+                </n-space>
+              </n-collapse-item>
+            </n-collapse>
+          </n-space>
+        </n-card>
+      </n-scrollbar>
     </n-layout-content>
 
     <!-- 确认删除对话框 -->
@@ -590,14 +715,89 @@ onUnmounted(() => {
   background: #fff;
 }
 
-.progress-logs {
-  font-family: monospace;
+/* 进度卡片 */
+.progress-card {
+  margin-bottom: 12px;
+  transition: all 0.3s;
+}
+
+.progress-card.is-cleaning {
+  border-color: #18a058;
+  box-shadow: 0 2px 8px rgba(24, 160, 88, 0.15);
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.progress-time {
+  color: #999;
   font-size: 12px;
 }
 
-.log-item {
-  padding: 4px 0;
+/* 统计栏 */
+.stats-bar {
+  display: flex;
+  gap: 24px;
+  padding: 12px 0;
   border-bottom: 1px solid #f0f0f0;
+  margin-bottom: 8px;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.stat-value.matched {
+  color: #f0a020;
+}
+
+.stat-value.deleted {
+  color: #2080f0;
+}
+
+.stat-value.remaining {
+  color: #909399;
+}
+
+.stat-value.folders {
+  color: #18a058;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #999;
+}
+
+/* 当前操作 */
+.current-action {
+  padding: 8px 12px;
+  background: #f5f7fa;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #606266;
+}
+
+/* 日志 */
+.progress-logs {
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+
+.log-item {
+  padding: 3px 0;
+  border-bottom: 1px solid #fafafa;
   display: flex;
   gap: 8px;
 }
@@ -607,28 +807,40 @@ onUnmounted(() => {
 }
 
 .log-time {
-  color: #999;
+  color: #c0c4cc;
   flex-shrink: 0;
 }
 
 .log-message {
-  color: #333;
+  color: #606266;
+  word-break: break-all;
 }
 
 .folder-skeleton {
   padding: 8px 0;
 }
 
+/* 卡片头部带操作 */
+.card-header-with-action {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+/* 筛选行 */
 .filter-row {
   display: flex;
   align-items: center;
 }
 
 .filter-label {
-  width: 90px;
+  width: 80px;
   flex-shrink: 0;
   text-align: right;
   padding-right: 8px;
   white-space: nowrap;
+  color: #606266;
+  font-size: 13px;
 }
 </style>

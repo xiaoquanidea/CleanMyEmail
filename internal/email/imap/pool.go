@@ -128,30 +128,42 @@ func (p *ConnectionPool) Get(ctx context.Context) (*PooledConn, error) {
 				continue
 			}
 
+			// 先标记为使用中，防止其他 goroutine 获取同一个连接
+			conn.inUse = true
+			connIndex := i
+
 			// 健康检查（临时释放锁）
 			p.mu.Unlock()
 			healthy := p.isHealthy(conn)
 			p.mu.Lock()
 
 			if p.closed {
+				conn.client.Close()
 				p.mu.Unlock()
 				return nil, fmt.Errorf("连接池已关闭")
 			}
 
 			if !healthy {
-				log.Printf("[DEBUG] %s 连接 #%d 健康检查失败，关闭", p.logPrefix, i)
+				log.Printf("[DEBUG] %s 连接 #%d 健康检查失败，关闭", p.logPrefix, connIndex)
 				p.stats.healthErr++
 				conn.client.Close()
-				p.removeConnLocked(i)
-				i--
+				// 从池中移除（需要重新查找索引，因为可能已变化）
+				for j, c := range p.connections {
+					if c == conn {
+						p.removeConnLocked(j)
+						break
+					}
+				}
+				p.cond.Signal() // 通知其他等待者
+				// 继续尝试下一个连接，需要重新开始循环
+				i = -1
 				continue
 			}
 
 			// 找到可用连接
-			conn.inUse = true
 			conn.lastUsed = now
 			p.stats.reused++
-			log.Printf("[DEBUG] %s 复用连接 #%d (总复用 %d 次)", p.logPrefix, i, p.stats.reused)
+			log.Printf("[DEBUG] %s 复用连接 #%d (总复用 %d 次)", p.logPrefix, connIndex, p.stats.reused)
 			p.mu.Unlock()
 			return conn, nil
 		}

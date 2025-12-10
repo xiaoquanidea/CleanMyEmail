@@ -37,6 +37,8 @@ type CleanRequest struct {
 	FilterSubject string `json:"filterSubject"` // 主题关键词筛选
 	FilterSize    string `json:"filterSize"`    // 大小筛选：">1M", "<100K" 等
 	FilterRead    string `json:"filterRead"`    // 已读/未读：seen, unseen, all
+	// 高级选项
+	EnableClientFallback bool `json:"enableClientFallback"` // 启用客户端回退（当服务端不支持发件人/主题搜索时）
 }
 
 // GetBatchSize 获取批处理大小，使用默认值如果未设置
