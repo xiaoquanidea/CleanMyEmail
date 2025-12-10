@@ -1,0 +1,38 @@
+# Binaries
+build/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+go.work
+
+# Node
+node_modules/
+frontend/dist/
+frontend/wailsjs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.db-journal
+*.sqlite
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
