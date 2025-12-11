@@ -5,7 +5,7 @@ import { useMessage } from 'naive-ui'
 import { NLayout, NLayoutSider, NLayoutContent, NButton, NEmpty, NSpin, NCard, NTag, NSpace, NPopconfirm, NIcon, NTooltip, NModal, NInput, NForm, NFormItem } from 'naive-ui'
 import { Add, Trash, Mail, RefreshOutline, Settings, TimeOutline, KeyOutline, WarningOutline, SparklesOutline, EyeOutline } from '@vicons/ionicons5'
 import { useAccountStore } from '../stores/account'
-import { StartOAuth2Reauth, WaitOAuth2Callback, CancelOAuth2Auth, GetVersion, UpdateAccountPassword, GetAccountPassword } from '../../wailsjs/go/main/App'
+import { StartOAuth2Reauth, WaitOAuth2Callback, CancelOAuth2Auth, GetVersion, UpdateAccountPassword, GetAccountCredentials } from '../../wailsjs/go/main/App'
 
 // 导入邮箱图标
 import gmailIcon from '../assets/icons/gmail.svg'
@@ -87,25 +87,26 @@ const passwordModalAccount = ref<any>(null)
 const newPassword = ref('')
 const updatingPassword = ref(false)
 
-// 查看密码相关
-const showViewPasswordModal = ref(false)
-const viewPasswordAccount = ref<any>(null)
-const viewPassword = ref('')
-const loadingPassword = ref(false)
+// 查看凭证相关
+const showCredentialsModal = ref(false)
+const credentialsAccount = ref<any>(null)
+const credentials = ref({ imapServer: '', password: '' })
+const loadingCredentials = ref(false)
 
-// 查看密码
-const handleViewPassword = async (account: any) => {
-  viewPasswordAccount.value = account
-  viewPassword.value = ''
-  showViewPasswordModal.value = true
-  loadingPassword.value = true
+// 查看凭证
+const handleViewCredentials = async (account: any) => {
+  credentialsAccount.value = account
+  credentials.value = { imapServer: '', password: '' }
+  showCredentialsModal.value = true
+  loadingCredentials.value = true
   try {
-    viewPassword.value = await GetAccountPassword(account.id)
+    const result = await GetAccountCredentials(account.id)
+    credentials.value = result
   } catch (error: any) {
-    message.error(`获取密码失败: ${error}`)
-    showViewPasswordModal.value = false
+    message.error(`获取凭证失败: ${error}`)
+    showCredentialsModal.value = false
   } finally {
-    loadingPassword.value = false
+    loadingCredentials.value = false
   }
 }
 
@@ -276,21 +277,21 @@ onMounted(async () => {
                 </div>
                 <div class="account-actions" @click.stop>
                   <n-space :size="4">
-                    <!-- 查看密码按钮（仅密码账号） -->
+                    <!-- 查看凭证按钮（仅密码账号） -->
                     <n-tooltip v-if="!isOAuth2Account(account)" trigger="hover">
                       <template #trigger>
                         <n-button
                           text
                           type="info"
                           size="small"
-                          @click="handleViewPassword(account)"
+                          @click="handleViewCredentials(account)"
                         >
                           <template #icon>
                             <n-icon><EyeOutline /></n-icon>
                           </template>
                         </n-button>
                       </template>
-                      查看密码
+                      查看凭证
                     </n-tooltip>
                     <!-- 重新授权按钮 -->
                     <n-tooltip v-if="needsReauth(account)" trigger="hover">
@@ -426,21 +427,24 @@ onMounted(async () => {
       </template>
     </n-modal>
 
-    <!-- 查看密码对话框 -->
+    <!-- 查看凭证对话框 -->
     <n-modal
-      v-model:show="showViewPasswordModal"
+      v-model:show="showCredentialsModal"
       preset="card"
-      title="查看密码"
-      style="width: 400px;"
+      title="账号凭证"
+      style="width: 450px;"
     >
-      <n-spin :show="loadingPassword">
-        <n-form>
+      <n-spin :show="loadingCredentials">
+        <n-form label-placement="left" label-width="100">
           <n-form-item label="邮箱账号">
-            <n-input :value="viewPasswordAccount?.email" disabled />
+            <n-input :value="credentialsAccount?.email" disabled />
+          </n-form-item>
+          <n-form-item label="IMAP 服务器">
+            <n-input :value="credentials.imapServer" readonly />
           </n-form-item>
           <n-form-item label="密码/授权码">
             <n-input
-              :value="viewPassword"
+              :value="credentials.password"
               type="password"
               show-password-on="click"
               readonly
@@ -450,7 +454,7 @@ onMounted(async () => {
       </n-spin>
       <template #footer>
         <n-space justify="end">
-          <n-button @click="showViewPasswordModal = false">关闭</n-button>
+          <n-button @click="showCredentialsModal = false">关闭</n-button>
         </n-space>
       </template>
     </n-modal>

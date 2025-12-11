@@ -110,16 +110,25 @@ func (a *App) GetAccount(id int64) (*model.EmailAccount, error) {
 	return a.accountService.Get(id)
 }
 
-// GetAccountPassword 获取账号密码（仅密码认证类型）
-func (a *App) GetAccountPassword(id int64) (string, error) {
+// AccountCredentials 账号凭证信息
+type AccountCredentials struct {
+	IMAPServer string `json:"imapServer"`
+	Password   string `json:"password"`
+}
+
+// GetAccountCredentials 获取账号凭证（仅密码认证类型）
+func (a *App) GetAccountCredentials(id int64) (*AccountCredentials, error) {
 	account, err := a.accountService.Get(id)
 	if err != nil {
-		return "", fmt.Errorf("获取账号失败: %w", err)
+		return nil, fmt.Errorf("获取账号失败: %w", err)
 	}
 	if account.AuthType.IsOAuth2() {
-		return "", fmt.Errorf("OAuth2 账号没有密码")
+		return nil, fmt.Errorf("OAuth2 账号没有密码")
 	}
-	return account.Password, nil
+	return &AccountCredentials{
+		IMAPServer: account.IMAPServer,
+		Password:   account.Password,
+	}, nil
 }
 
 // DeleteAccount 删除账号
