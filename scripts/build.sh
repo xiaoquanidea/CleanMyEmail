@@ -92,8 +92,9 @@ package_release() {
     cd "${BUILD_DIR}"
     
     if [ "$platform" == "darwin" ]; then
-        # macOS 使用 zip
-        zip -r "${archive_name}.zip" "${platform}-${arch}/${APP_NAME}.app"
+        # macOS 使用 zip，包含修复脚本
+        cp ../scripts/fix-mac.sh "${platform}-${arch}/"
+        zip -r "${archive_name}.zip" "${platform}-${arch}/${APP_NAME}.app" "${platform}-${arch}/fix-mac.sh"
     elif [ "$platform" == "windows" ]; then
         # Windows 使用 zip
         zip -r "${archive_name}.zip" "${platform}-${arch}/"
