@@ -2,7 +2,7 @@
 
 # CleanMyEmail 多平台构建脚本
 # 用法: ./scripts/build.sh [platform] [version]
-# 平台: darwin-amd64, darwin-arm64, windows-amd64, linux-amd64, all
+# 平台: darwin-amd64, darwin-arm64, windows-amd64, all
 # 示例: ./scripts/build.sh all 1.0.0
 
 set -e
@@ -130,10 +130,6 @@ main() {
             build_platform "windows" "amd64" "${APP_NAME}"
             package_release "windows" "amd64"
             ;;
-        "linux-amd64")
-            build_platform "linux" "amd64" "${APP_NAME}"
-            package_release "linux" "amd64"
-            ;;
         "all")
             build_platform "darwin" "amd64" "${APP_NAME}"
             package_release "darwin" "amd64"
@@ -141,12 +137,10 @@ main() {
             package_release "darwin" "arm64"
             build_platform "windows" "amd64" "${APP_NAME}"
             package_release "windows" "amd64"
-            build_platform "linux" "amd64" "${APP_NAME}"
-            package_release "linux" "amd64"
             ;;
         *)
             echo -e "${RED}未知平台: ${target}${NC}"
-            echo "支持的平台: darwin-amd64, darwin-arm64, windows-amd64, linux-amd64, all"
+            echo "支持的平台: darwin-amd64, darwin-arm64, windows-amd64, all"
             exit 1
             ;;
     esac
