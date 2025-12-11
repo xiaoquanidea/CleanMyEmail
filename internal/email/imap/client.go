@@ -279,6 +279,12 @@ func ListMailboxes(client *imapclient.Client) ([]*model.MailFolder, error) {
 			}
 		}
 
+		// 调试：记录 LIST-STATUS 返回的数量
+		if supportsListStatus && folderCount <= 10 {
+			hasStatus := mbox.Status != nil
+			log.Printf("[DEBUG] 文件夹 %s: hasStatus=%v, messageCount=%d", mbox.Mailbox, hasStatus, folder.MessageCount)
+		}
+
 		folders = append(folders, folder)
 	}
 
@@ -302,27 +308,52 @@ type FolderStatusUpdate struct {
 }
 
 // FetchFolderStatus 异步获取文件夹邮件数量，通过回调返回
+// 策略：先用 STATUS 命令（快速），如果返回 0 则用 EXAMINE 回退（更可靠）
 func FetchFolderStatus(client *imapclient.Client, folders []*model.MailFolder, onUpdate func(FolderStatusUpdate)) {
-	for _, folder := range folders {
+	log.Printf("[DEBUG] 开始异步获取 %d 个文件夹的邮件数量...", len(folders))
+	successCount := 0
+	fallbackCount := 0
+	for i, folder := range folders {
 		if !folder.IsSelectable {
 			continue
 		}
+
+		var messageCount uint32 = 0
+
+		// 先尝试 STATUS 命令（快速）
 		statusCmd := client.Status(folder.FullPath, &imap.StatusOptions{
 			NumMessages: true,
-			NumUnseen:   true,
 		})
 		statusData, err := statusCmd.Wait()
-		if err != nil {
-			log.Printf("[DEBUG] 获取 %s 状态失败: %v", folder.FullPath, err)
-			continue
+		if err == nil && statusData.NumMessages != nil {
+			messageCount = *statusData.NumMessages
 		}
-		update := FolderStatusUpdate{FolderPath: folder.FullPath}
-		if statusData.NumMessages != nil {
-			update.MessageCount = *statusData.NumMessages
+
+		// 如果 STATUS 返回 0，使用 EXAMINE 回退
+		if messageCount == 0 {
+			selectCmd := client.Select(folder.FullPath, &imap.SelectOptions{
+				ReadOnly: true,
+			})
+			selectData, err := selectCmd.Wait()
+			if err == nil {
+				messageCount = selectData.NumMessages
+				if messageCount > 0 {
+					fallbackCount++
+				}
+			}
 		}
-		if statusData.NumUnseen != nil {
-			update.UnseenCount = *statusData.NumUnseen
+
+		update := FolderStatusUpdate{
+			FolderPath:   folder.FullPath,
+			MessageCount: messageCount,
 		}
 		onUpdate(update)
+		successCount++
+
+		// 每10个文件夹输出一次进度
+		if (i+1)%10 == 0 || i == len(folders)-1 {
+			log.Printf("[DEBUG] 文件夹状态获取进度: %d/%d", i+1, len(folders))
+		}
 	}
+	log.Printf("[DEBUG] 文件夹状态获取完成，成功 %d 个，EXAMINE回退 %d 个", successCount, fallbackCount)
 }

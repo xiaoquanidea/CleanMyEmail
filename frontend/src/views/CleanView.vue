@@ -198,26 +198,48 @@ const formatTimestamp = () => {
 
 // 格式化邮件数量
 const formatMessageCount = (count: number): string => {
-  if (count >= 10000) {
-    return `${(count / 10000).toFixed(1)}万`
+  if (count >= 100000000) {
+    // 1亿以上：x.x亿
+    return `${(count / 100000000).toFixed(1)}亿`
+  } else if (count >= 10000) {
+    // 1万以上：显示 x万x千 或 x.xw
+    const wan = Math.floor(count / 10000)
+    const qian = Math.floor((count % 10000) / 1000)
+    if (qian > 0) {
+      return `${wan}万${qian}k`
+    }
+    return `${wan}万`
   } else if (count >= 1000) {
+    // 1000以上：x.xk
     return `${(count / 1000).toFixed(1)}k`
   }
   return count.toString()
 }
 
 // 渲染文件夹后缀（邮件数量）
+// messageCount: undefined/null = 还没获取到，显示加载中
+// messageCount: 0 = 空文件夹，显示 (0封)
+// messageCount: >0 = 有邮件，显示数量
 const renderFolderSuffix = ({ option }: any) => {
-  if (option.messageCount > 0) {
+  // 还没获取到数量时显示加载指示
+  if (option.messageCount === undefined || option.messageCount === null) {
     return h('span', {
       style: {
-        color: option.messageCount > 1000 ? '#f0a020' : '#999',
+        color: '#ccc',
         fontSize: '12px',
         marginLeft: '4px'
       }
-    }, `(${formatMessageCount(option.messageCount)}封)`)
+    }, '(...)')
   }
-  return null
+
+  // 显示邮件数量（包括0封）
+  return h('span', {
+    style: {
+      color: option.messageCount > 1000 ? '#f0a020' : '#999',
+      fontSize: '12px',
+      marginLeft: '4px'
+    }
+  }, `(${formatMessageCount(option.messageCount)}封)`)
 }
 
 const handleBack = () => {
@@ -385,20 +407,32 @@ interface FolderStatusUpdate {
 }
 
 const updateFolderStatus = (update: FolderStatusUpdate) => {
-  // 更新本地 folderTree
+  console.log('[folder:status] 收到更新:', update.folderPath, update.messageCount)
+
+  // 更新本地 folderTree（需要触发 Vue 响应式）
   const updateNode = (nodes: FolderTreeNode[]): boolean => {
-    for (const node of nodes) {
-      if (node.fullPath === update.folderPath) {
-        node.messageCount = update.messageCount
+    for (let i = 0; i < nodes.length; i++) {
+      if (nodes[i].fullPath === update.folderPath) {
+        // 创建新对象触发响应式更新
+        nodes[i] = { ...nodes[i], messageCount: update.messageCount }
         return true
       }
-      if (node.children && updateNode(node.children)) {
-        return true
+      if (nodes[i].children) {
+        if (updateNode(nodes[i].children!)) {
+          return true
+        }
       }
     }
     return false
   }
-  updateNode(folderTree.value)
+
+  if (updateNode(folderTree.value)) {
+    // 强制触发响应式更新
+    folderTree.value = [...folderTree.value]
+    console.log('[folder:status] 更新成功:', update.folderPath)
+  } else {
+    console.log('[folder:status] 未找到文件夹:', update.folderPath)
+  }
 
   // 同步更新 store 缓存
   const accountId = parseInt(props.accountId)
@@ -406,11 +440,13 @@ const updateFolderStatus = (update: FolderStatusUpdate) => {
 }
 
 onMounted(() => {
-  loadFolders()
+  // 先注册事件监听，再加载文件夹，避免异步事件丢失
   EventsOn('clean:progress', onProgress)
   EventsOn('clean:complete', onComplete)
   EventsOn('clean:error', onError)
   EventsOn('folder:status', updateFolderStatus)
+  // 最后加载文件夹
+  loadFolders()
 })
 
 onUnmounted(() => {
