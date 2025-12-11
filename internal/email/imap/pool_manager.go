@@ -50,6 +50,10 @@ func (pm *PoolManager) GetPool(accountID int64, config *ConnectConfig, opts *Poo
 		mp.lastAccess = time.Now()
 		// 检查配置是否变化（简单比较服务器和用户名）
 		if mp.config.Server == config.Server && mp.config.Username == config.Username {
+			// 更新可能变化的字段（如 AccessToken、TokenRefresher）
+			mp.config.AccessToken = config.AccessToken
+			mp.config.TokenRefresher = config.TokenRefresher
+			mp.pool.UpdateConfig(config)
 			log.Printf("[DEBUG] %s 复用连接池", logPrefix)
 			return mp.pool
 		}

@@ -314,6 +314,13 @@ func (p *ConnectionPool) Stats() PoolStats {
 	return stats
 }
 
+// UpdateConfig 更新连接池配置（用于更新 AccessToken 等）
+func (p *ConnectionPool) UpdateConfig(config *ConnectConfig) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.config = config
+}
+
 // removeConnLocked 移除连接（需要持有锁）
 func (p *ConnectionPool) removeConnLocked(index int) {
 	if index < 0 || index >= len(p.connections) {

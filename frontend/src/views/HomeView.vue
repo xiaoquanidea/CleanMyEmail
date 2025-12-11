@@ -3,9 +3,9 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { NLayout, NLayoutSider, NLayoutContent, NButton, NEmpty, NSpin, NCard, NTag, NSpace, NPopconfirm, NIcon, NTooltip } from 'naive-ui'
-import { Add, Trash, Mail, RefreshOutline, Settings, TimeOutline, KeyOutline, WarningOutline } from '@vicons/ionicons5'
+import { Add, Trash, Mail, RefreshOutline, Settings, TimeOutline, KeyOutline, WarningOutline, SparklesOutline } from '@vicons/ionicons5'
 import { useAccountStore } from '../stores/account'
-import { StartOAuth2Auth, WaitOAuth2Callback, CancelOAuth2Auth } from '../../wailsjs/go/main/App'
+import { StartOAuth2Auth, WaitOAuth2Callback, CancelOAuth2Auth, GetVersion } from '../../wailsjs/go/main/App'
 
 // 导入邮箱图标
 import gmailIcon from '../assets/icons/gmail.svg'
@@ -45,6 +45,7 @@ const router = useRouter()
 const message = useMessage()
 const accountStore = useAccountStore()
 const reauthorizing = ref<number | null>(null)
+const appVersion = ref('')
 
 const statusTagType = (status: string) => {
   switch (status) {
@@ -130,8 +131,13 @@ const handleHistory = () => {
   router.push('/history')
 }
 
-onMounted(() => {
+onMounted(async () => {
   accountStore.fetchAccounts()
+  try {
+    appVersion.value = await GetVersion()
+  } catch {
+    appVersion.value = ''
+  }
 })
 </script>
 
@@ -146,18 +152,36 @@ onMounted(() => {
     >
       <div class="sider-header">
         <div class="header-top">
-          <h2 class="title">CleanMyEmail</h2>
+          <div class="brand">
+            <div class="logo-icon">
+              <n-icon size="20" color="#fff"><SparklesOutline /></n-icon>
+            </div>
+            <div class="brand-info">
+              <h2 class="title">CleanMyEmail</h2>
+              <span v-if="appVersion" class="version">{{ appVersion }}</span>
+            </div>
+          </div>
           <n-space :size="4">
-            <n-button size="small" quaternary @click="handleHistory" title="清理历史">
-              <template #icon>
-                <n-icon size="18"><TimeOutline /></n-icon>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button size="small" quaternary class="header-btn" @click="handleHistory">
+                  <template #icon>
+                    <n-icon size="18"><TimeOutline /></n-icon>
+                  </template>
+                </n-button>
               </template>
-            </n-button>
-            <n-button size="small" quaternary @click="handleSettings" title="设置">
-              <template #icon>
-                <n-icon size="18"><Settings /></n-icon>
+              清理历史
+            </n-tooltip>
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button size="small" quaternary class="header-btn" @click="handleSettings">
+                  <template #icon>
+                    <n-icon size="18"><Settings /></n-icon>
+                  </template>
+                </n-button>
               </template>
-            </n-button>
+              设置
+            </n-tooltip>
           </n-space>
         </div>
         <n-button type="primary" size="small" block @click="handleAddAccount" class="add-btn">
@@ -240,12 +264,53 @@ onMounted(() => {
     <!-- 右侧内容区 -->
     <n-layout-content content-style="padding: 24px;" class="content">
       <div class="welcome">
-        <n-icon size="80" color="#18a058">
-          <Mail />
-        </n-icon>
-        <h1>欢迎使用 CleanMyEmail</h1>
-        <p>选择左侧账号开始清理邮件，或添加新账号</p>
-        <n-button v-if="accountStore.accounts.length === 0" type="primary" size="large" @click="handleAddAccount">
+        <!-- 动画邮件图标 -->
+        <div class="icon-container">
+          <div class="pulse-ring"></div>
+          <div class="pulse-ring delay-1"></div>
+          <div class="pulse-ring delay-2"></div>
+          <div class="icon-wrapper">
+            <n-icon size="64" color="#fff">
+              <Mail />
+            </n-icon>
+          </div>
+          <!-- 飞舞的小邮件 -->
+          <div class="floating-mail mail-1">✉</div>
+          <div class="floating-mail mail-2">📧</div>
+          <div class="floating-mail mail-3">📨</div>
+        </div>
+
+        <h1 class="title-animate">
+          <span class="title-text">欢迎使用</span>
+          <span class="brand-text">CleanMyEmail</span>
+        </h1>
+        <p class="subtitle-animate">选择左侧账号开始清理邮件，或添加新账号</p>
+
+        <!-- 功能亮点 -->
+        <div class="features">
+          <div class="feature-item">
+            <span class="feature-icon">🚀</span>
+            <span class="feature-title">高性能并发</span>
+            <span class="feature-desc">连接池 + 多协程并行处理</span>
+          </div>
+          <div class="feature-item">
+            <span class="feature-icon">🔒</span>
+            <span class="feature-title">隐私安全</span>
+            <span class="feature-desc">数据本地处理，不上传云端</span>
+          </div>
+          <div class="feature-item">
+            <span class="feature-icon">🎯</span>
+            <span class="feature-title">精准筛选</span>
+            <span class="feature-desc">按日期/发件人/主题/大小过滤</span>
+          </div>
+          <div class="feature-item">
+            <span class="feature-icon">🔑</span>
+            <span class="feature-title">多种认证</span>
+            <span class="feature-desc">支持密码和 OAuth2 授权</span>
+          </div>
+        </div>
+
+        <n-button v-if="accountStore.accounts.length === 0" type="primary" size="large" class="add-btn-animate" @click="handleAddAccount">
           <template #icon>
             <n-icon><Add /></n-icon>
           </template>
@@ -273,7 +338,11 @@ onMounted(() => {
 .sider-header {
   margin-bottom: 16px;
   padding-bottom: 16px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid #e8e8e8;
+  background: linear-gradient(180deg, #f8fdf9 0%, #fafafa 100%);
+  margin: -16px -16px 16px -16px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
 .header-top {
@@ -282,27 +351,77 @@ onMounted(() => {
   align-items: center;
   margin-bottom: 12px;
   -webkit-app-region: drag;
-  padding: 4px 0;
 }
 
 .header-top :deep(button) {
   -webkit-app-region: no-drag;
 }
 
-.title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #333;
-  cursor: default;
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.settings-btn {
+.logo-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #18a058 0%, #36ad6a 50%, #63e2b7 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(24, 160, 88, 0.3);
+  animation: logoShine 3s ease-in-out infinite;
+}
+
+@keyframes logoShine {
+  0%, 100% { box-shadow: 0 2px 8px rgba(24, 160, 88, 0.3); }
+  50% { box-shadow: 0 4px 16px rgba(24, 160, 88, 0.5); }
+}
+
+.brand-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #18a058, #36ad6a);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  cursor: default;
+  line-height: 1.2;
+}
+
+.version {
+  font-size: 11px;
+  color: #999;
+  font-weight: 400;
+}
+
+.header-btn {
   color: #666;
+  transition: all 0.2s;
+}
+
+.header-btn:hover {
+  color: #18a058;
+  background: rgba(24, 160, 88, 0.1);
 }
 
 .add-btn {
   width: 100%;
+  animation: btnReady 2s ease-in-out infinite;
+}
+
+@keyframes btnReady {
+  0%, 100% { box-shadow: 0 2px 4px rgba(24, 160, 88, 0.2); }
+  50% { box-shadow: 0 4px 12px rgba(24, 160, 88, 0.35); }
 }
 
 .account-list {
@@ -372,13 +491,159 @@ onMounted(() => {
   color: #666;
 }
 
-.welcome h1 {
-  margin: 24px 0 8px;
-  color: #333;
+/* 图标容器 */
+.icon-container {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
 }
 
-.welcome p {
+.icon-wrapper {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #18a058 0%, #36ad6a 50%, #63e2b7 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 32px rgba(24, 160, 88, 0.35);
+  animation: iconFloat 3s ease-in-out infinite;
+  z-index: 2;
+}
+
+@keyframes iconFloat {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-8px) scale(1.05); }
+}
+
+/* 脉冲光环 */
+.pulse-ring {
+  position: absolute;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: 2px solid #18a058;
+  animation: pulseRing 2s ease-out infinite;
+}
+
+.pulse-ring.delay-1 { animation-delay: 0.6s; }
+.pulse-ring.delay-2 { animation-delay: 1.2s; }
+
+@keyframes pulseRing {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2); opacity: 0; }
+}
+
+/* 飞舞的小邮件 */
+.floating-mail {
+  position: absolute;
+  font-size: 20px;
+  animation: floatMail 4s ease-in-out infinite;
+  opacity: 0.7;
+}
+
+.mail-1 { top: 0; left: 10px; animation-delay: 0s; }
+.mail-2 { top: 20px; right: 0; animation-delay: 1.3s; }
+.mail-3 { bottom: 10px; left: 0; animation-delay: 2.6s; }
+
+@keyframes floatMail {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); opacity: 0.7; }
+  25% { transform: translate(5px, -10px) rotate(10deg); opacity: 1; }
+  50% { transform: translate(-5px, -5px) rotate(-5deg); opacity: 0.8; }
+  75% { transform: translate(3px, 5px) rotate(5deg); opacity: 0.9; }
+}
+
+/* 标题动画 */
+.title-animate {
+  margin: 8px 0;
+  animation: fadeInUp 0.8s ease-out;
+}
+
+.title-text {
+  color: #333;
+  font-size: 28px;
+  font-weight: 400;
+}
+
+.brand-text {
+  background: linear-gradient(135deg, #18a058, #36ad6a, #63e2b7);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-size: 32px;
+  font-weight: 700;
+  margin-left: 8px;
+}
+
+.subtitle-animate {
+  color: #888;
+  font-size: 15px;
   margin-bottom: 24px;
+  animation: fadeInUp 0.8s ease-out 0.2s both;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 功能亮点 */
+.features {
+  display: flex;
+  gap: 32px;
+  margin-bottom: 32px;
+  animation: fadeInUp 0.8s ease-out 0.4s both;
+}
+
+.feature-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px 24px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #f8fdf9 0%, #f0faf3 100%);
+  border: 1px solid #e8f5ec;
+  transition: all 0.3s ease;
+  min-width: 160px;
+}
+
+.feature-item:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 12px 32px rgba(24, 160, 88, 0.18);
+  border-color: #c5e8d2;
+  background: linear-gradient(135deg, #f0faf3 0%, #e8f5ec 100%);
+}
+
+.feature-icon {
+  font-size: 32px;
+  margin-bottom: 4px;
+}
+
+.feature-title {
+  color: #333;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.feature-desc {
+  color: #888;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/* 按钮动画 */
+.add-btn-animate {
+  animation: fadeInUp 0.8s ease-out 0.6s both, btnPulse 2s ease-in-out 1.5s infinite;
+}
+
+@keyframes btnPulse {
+  0%, 100% { box-shadow: 0 2px 8px rgba(24, 160, 88, 0.3); }
+  50% { box-shadow: 0 4px 20px rgba(24, 160, 88, 0.5); }
 }
 
 .copyright {

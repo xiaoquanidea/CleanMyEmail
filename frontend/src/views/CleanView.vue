@@ -385,6 +385,7 @@ interface FolderStatusUpdate {
 }
 
 const updateFolderStatus = (update: FolderStatusUpdate) => {
+  // 更新本地 folderTree
   const updateNode = (nodes: FolderTreeNode[]): boolean => {
     for (const node of nodes) {
       if (node.fullPath === update.folderPath) {
@@ -398,6 +399,10 @@ const updateFolderStatus = (update: FolderStatusUpdate) => {
     return false
   }
   updateNode(folderTree.value)
+
+  // 同步更新 store 缓存
+  const accountId = parseInt(props.accountId)
+  folderStore.updateFolderStatus(accountId, update.folderPath, update.messageCount)
 }
 
 onMounted(() => {

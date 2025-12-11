@@ -75,13 +75,34 @@ export const useFolderStore = defineStore('folder', () => {
     }
   }
 
+  // 更新缓存中指定文件夹的邮件数量
+  function updateFolderStatus(accountId: number, folderPath: string, messageCount: number) {
+    const entry = cache.value.get(accountId)
+    if (!entry) return
+
+    const updateNode = (nodes: FolderTreeNode[]): boolean => {
+      for (const node of nodes) {
+        if (node.fullPath === folderPath) {
+          node.messageCount = messageCount
+          return true
+        }
+        if (node.children && updateNode(node.children)) {
+          return true
+        }
+      }
+      return false
+    }
+    updateNode(entry.data)
+  }
+
   return {
     loading,
     getFolderTree,
     clearCache,
     clearAllCache,
     getCacheInfo,
-    isCacheValid
+    isCacheValid,
+    updateFolderStatus
   }
 })
 

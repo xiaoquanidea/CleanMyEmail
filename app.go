@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -25,7 +26,6 @@ type App struct {
 	historyService *service.HistoryService
 	poolManager    *imap.PoolManager // 连接池管理器
 	currentCleaner *cleaner.Cleaner
-	currentHistoryID int64 // 当前清理任务的历史记录ID
 	// OAuth2 回调服务器
 	callbackServer    *oauth2.CallbackServer
 	pendingVendor     string
@@ -53,7 +53,7 @@ func (a *App) startup(ctx context.Context) {
 	if proxySettings, err := db.GetProxySettings(); err == nil && proxySettings != nil {
 		proxy.SetGlobalProxy(proxySettings)
 		if proxySettings.Enabled {
-			fmt.Printf("[INFO] 已加载代理设置: %s\n", proxySettings.GetURL())
+			log.Printf("[INFO] 已加载代理设置: %s", proxySettings.GetURL())
 		}
 	}
 }
@@ -164,9 +164,8 @@ func (a *App) StartClean(req model.CleanRequest) error {
 	// 创建历史记录
 	historyID, err := a.historyService.CreateHistory(&req, acc.Email)
 	if err != nil {
-		fmt.Printf("[WARN] 创建历史记录失败: %v\n", err)
+		log.Printf("[WARN] 创建历史记录失败: %v", err)
 	}
-	a.currentHistoryID = historyID
 
 	// 使用连接池管理器获取连接池
 	concurrency := req.GetMaxConcurrency()
@@ -174,36 +173,37 @@ func (a *App) StartClean(req model.CleanRequest) error {
 		MaxSize:     concurrency,
 		IdleTimeout: 5 * time.Minute,
 	})
-	a.currentCleaner = cleaner.NewCleaner(pool)
+	currentCleaner := cleaner.NewCleaner(pool)
+	a.currentCleaner = currentCleaner
 
 	// 启动进度监听
 	go func() {
-		for progress := range a.currentCleaner.ProgressChan() {
+		for progress := range currentCleaner.ProgressChan() {
 			wailsRuntime.EventsEmit(a.ctx, "clean:progress", progress)
 		}
 	}()
 
-	// 异步执行清理
-	go func() {
-		result, err := a.currentCleaner.Clean(&req)
+	// 异步执行清理（使用局部变量避免竞态）
+	go func(hID int64, c *cleaner.Cleaner) {
+		result, err := c.Clean(&req)
 		if err != nil {
 			// 更新历史记录为失败
-			if a.currentHistoryID > 0 {
-				a.historyService.UpdateHistory(a.currentHistoryID, 0, 0, "failed", err.Error(), 0)
+			if hID > 0 {
+				a.historyService.UpdateHistory(hID, 0, 0, "failed", err.Error(), 0)
 			}
 			wailsRuntime.EventsEmit(a.ctx, "clean:error", err.Error())
 			return
 		}
 		// 更新历史记录为完成
-		if a.currentHistoryID > 0 {
+		if hID > 0 {
 			matchedCount := 0
 			for _, stat := range result.FolderStats {
 				matchedCount += stat.MatchedCount
 			}
-			a.historyService.UpdateHistory(a.currentHistoryID, matchedCount, result.TotalDeleted, result.Status, "", result.Duration)
+			a.historyService.UpdateHistory(hID, matchedCount, result.TotalDeleted, result.Status, "", result.Duration)
 		}
 		wailsRuntime.EventsEmit(a.ctx, "clean:complete", result)
-	}()
+	}(historyID, currentCleaner)
 
 	return nil
 }
@@ -212,10 +212,6 @@ func (a *App) StartClean(req model.CleanRequest) error {
 func (a *App) CancelClean() {
 	if a.currentCleaner != nil {
 		a.currentCleaner.Cancel()
-	}
-	// 更新历史记录为取消
-	if a.currentHistoryID > 0 {
-		a.historyService.UpdateHistory(a.currentHistoryID, 0, 0, "cancelled", "用户取消", 0)
 	}
 }
 
@@ -385,6 +381,11 @@ func (a *App) GetAppVersion() *AppVersionInfo {
 	}
 }
 
+// GetVersion 获取版本号字符串
+func (a *App) GetVersion() string {
+	return Version
+}
+
 // GetCurrentTime 获取当前时间（用于前端默认值）
 func (a *App) GetCurrentTime() time.Time {
 	return time.Now()
@@ -405,9 +406,9 @@ func (a *App) SaveProxySettings(settings *model.ProxySettings) error {
 	// 更新全局代理设置
 	proxy.SetGlobalProxy(settings)
 	if settings.Enabled {
-		fmt.Printf("[INFO] 代理设置已更新: %s\n", settings.GetURL())
+		log.Printf("[INFO] 代理设置已更新: %s", settings.GetURL())
 	} else {
-		fmt.Printf("[INFO] 代理已禁用\n")
+		log.Printf("[INFO] 代理已禁用")
 	}
 	return nil
 }
