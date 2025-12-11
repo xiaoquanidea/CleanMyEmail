@@ -114,44 +114,76 @@ func (s *Service) List() ([]*model.AccountListItem, error) {
 		return nil, err
 	}
 
-	// 检查 OAuth2 账号的 token 状态
+	// 检查 OAuth2 账号的 token 状态，并同步更新账号状态
 	for _, account := range accounts {
 		if account.AuthType.IsOAuth2() {
-			warning := s.checkTokenWarning(account)
-			if warning != "" {
-				account.TokenWarning = warning
-			}
+			s.syncAccountStatusWithToken(account)
 		}
 	}
 
 	return accounts, nil
 }
 
-// checkTokenWarning 检查 token 警告状态
-func (s *Service) checkTokenWarning(account *model.AccountListItem) string {
+// syncAccountStatusWithToken 同步账号状态与 Token 状态
+// 如果 Token 过期或有问题，更新账号状态为 auth_required
+func (s *Service) syncAccountStatusWithToken(account *model.AccountListItem) {
 	token, err := db.GetTokenByAccountID(account.ID)
 	if err != nil || token == nil {
-		return ""
+		// 没有 Token，需要授权
+		if account.Status == model.AccountStatusActive {
+			account.Status = model.AccountStatusAuthRequired
+			db.UpdateAccountStatus(account.ID, model.AccountStatusAuthRequired)
+		}
+		account.TokenWarning = "未找到授权信息，请重新授权"
+		return
 	}
 
 	// 检查 token 状态
 	if token.AuthStatus == model.OAuth2StatusExpired {
-		return "Token已过期，请重新授权"
+		if account.Status == model.AccountStatusActive {
+			account.Status = model.AccountStatusAuthRequired
+			db.UpdateAccountStatus(account.ID, model.AccountStatusAuthRequired)
+		}
+		account.TokenWarning = "Token已过期，请重新授权"
+		return
+	}
+
+	// 检查 access token 是否已过期（且没有 refresh token）
+	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) && token.RefreshToken == "" {
+		if account.Status == model.AccountStatusActive {
+			account.Status = model.AccountStatusAuthRequired
+			db.UpdateAccountStatus(account.ID, model.AccountStatusAuthRequired)
+		}
+		account.TokenWarning = "Token已过期，请重新授权"
+		return
 	}
 
 	// 检查 Outlook 的 refresh token 是否即将过期（90天有效期，提前7天警告）
 	if account.Vendor == model.EmailVendorOutlook {
 		lifetime := account.Vendor.GetRefreshTokenLifetime()
-		if lifetime > 0 && token.CreatedAt.Add(lifetime).Before(time.Now().Add(7*24*time.Hour)) {
-			daysLeft := int(time.Until(token.CreatedAt.Add(lifetime)).Hours() / 24)
-			if daysLeft <= 0 {
-				return "Refresh Token已过期，请重新授权"
+		if lifetime > 0 {
+			expiresAt := token.CreatedAt.Add(lifetime)
+			if time.Now().After(expiresAt) {
+				// Refresh Token 已过期
+				if account.Status == model.AccountStatusActive {
+					account.Status = model.AccountStatusAuthRequired
+					db.UpdateAccountStatus(account.ID, model.AccountStatusAuthRequired)
+				}
+				account.TokenWarning = "Refresh Token已过期，请重新授权"
+				return
+			} else if expiresAt.Before(time.Now().Add(7 * 24 * time.Hour)) {
+				// 即将过期，只显示警告，不改变状态
+				daysLeft := int(time.Until(expiresAt).Hours() / 24)
+				account.TokenWarning = fmt.Sprintf("Refresh Token将在%d天后过期，建议重新授权", daysLeft)
 			}
-			return fmt.Sprintf("Refresh Token将在%d天后过期，建议重新授权", daysLeft)
 		}
 	}
 
-	return ""
+	// Token 状态正常，如果账号状态是 auth_required，恢复为 active
+	if account.Status == model.AccountStatusAuthRequired && token.AuthStatus == model.OAuth2StatusAuthorized {
+		account.Status = model.AccountStatusActive
+		db.UpdateAccountStatus(account.ID, model.AccountStatusActive)
+	}
 }
 
 // Get 获取账号详情
