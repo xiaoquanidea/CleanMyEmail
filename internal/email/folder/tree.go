@@ -61,17 +61,19 @@ func buildHierarchicalTree(folders []*model.MailFolder, delimiter string) []*mod
 
 	for i, f := range folders {
 		orderMap[f.FullPath] = i
-		
+
 		parts := strings.Split(f.FullPath, delimiter)
-		
+
 		// 创建或获取当前节点
+		// 所有文件夹都允许勾选，即使是 \Noselect 的容器文件夹
+		// 这样用户可以通过勾选父文件夹来选择所有子文件夹
 		node := &model.FolderTreeNode{
 			Key:          f.FullPath,
 			Label:        parts[len(parts)-1],
 			FullPath:     f.FullPath,
 			MessageCount: f.MessageCount,
 			IsLeaf:       true,
-			Disabled:     !f.IsSelectable,
+			Disabled:     false, // 允许所有文件夹被勾选
 		}
 		nodeMap[f.FullPath] = node
 
@@ -83,13 +85,13 @@ func buildHierarchicalTree(folders []*model.MailFolder, delimiter string) []*mod
 			parentPath := strings.Join(parts[:len(parts)-1], delimiter)
 			parent, exists := nodeMap[parentPath]
 			if !exists {
-				// 创建虚拟父节点
+				// 创建虚拟父节点（容器文件夹）
 				parent = &model.FolderTreeNode{
 					Key:      parentPath,
 					Label:    parts[len(parts)-2],
 					FullPath: parentPath,
 					IsLeaf:   false,
-					Disabled: true,
+					Disabled: false, // 允许虚拟父节点也能被勾选
 				}
 				nodeMap[parentPath] = parent
 				// 检查父节点是否是顶级
@@ -111,9 +113,7 @@ func GetAllFolderPaths(nodes []*model.FolderTreeNode) []string {
 	var collect func(nodes []*model.FolderTreeNode)
 	collect = func(nodes []*model.FolderTreeNode) {
 		for _, node := range nodes {
-			if !node.Disabled {
-				paths = append(paths, node.FullPath)
-			}
+			paths = append(paths, node.FullPath)
 			if len(node.Children) > 0 {
 				collect(node.Children)
 			}
@@ -141,9 +141,7 @@ func FindNodeByPath(nodes []*model.FolderTreeNode, path string) *model.FolderTre
 // GetChildPaths 获取节点及其所有子节点的路径
 func GetChildPaths(node *model.FolderTreeNode) []string {
 	var paths []string
-	if !node.Disabled {
-		paths = append(paths, node.FullPath)
-	}
+	paths = append(paths, node.FullPath)
 	for _, child := range node.Children {
 		paths = append(paths, GetChildPaths(child)...)
 	}

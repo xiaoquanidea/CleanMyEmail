@@ -114,11 +114,14 @@ func (a *App) GetFolderTree(accountID int64) ([]*model.FolderTreeNode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("连接邮箱失败: %w", err)
 	}
-	defer conn.Release()
+
+	// 检查是否支持 LIST-STATUS
+	supportsListStatus := imap.SupportsListStatus(conn.Client())
 
 	folders, err := imap.ListMailboxes(conn.Client())
 	if err != nil {
-		conn.MarkBad() // 标记连接为不可用
+		conn.MarkBad()
+		conn.Release()
 		return nil, err
 	}
 
@@ -126,7 +129,21 @@ func (a *App) GetFolderTree(accountID int64) ([]*model.FolderTreeNode, error) {
 	db.UpdateAccountLastConnected(accountID)
 	db.UpdateAccountStatus(accountID, model.AccountStatusActive)
 
-	return folder.BuildFolderTree(folders), nil
+	tree := folder.BuildFolderTree(folders)
+
+	// 如果不支持 LIST-STATUS，异步获取邮件数量
+	if !supportsListStatus {
+		go func() {
+			defer conn.Release()
+			imap.FetchFolderStatus(conn.Client(), folders, func(update imap.FolderStatusUpdate) {
+				wailsRuntime.EventsEmit(a.ctx, "folder:status", update)
+			})
+		}()
+	} else {
+		conn.Release()
+	}
+
+	return tree, nil
 }
 
 // ==================== 邮件清理 ====================

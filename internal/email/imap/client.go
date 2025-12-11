@@ -22,6 +22,9 @@ type ConnectConfig struct {
 	Password    string
 	AuthType    model.EmailAuthType
 	AccessToken string
+	// TokenRefresher 用于在 token 过期时刷新，返回新的 access token
+	// 如果为 nil，则不支持自动刷新
+	TokenRefresher func() (string, error)
 }
 
 // Connect 连接到IMAP服务器（带重试）
@@ -206,24 +209,39 @@ func TestConnection(cfg *ConnectConfig) error {
 	return nil
 }
 
+// SupportsListStatus 检查服务器是否支持 LIST-STATUS 扩展
+func SupportsListStatus(client *imapclient.Client) bool {
+	return client.Caps().Has(imap.CapListStatus)
+}
+
 // ListMailboxes 列出所有邮箱文件夹
 func ListMailboxes(client *imapclient.Client) ([]*model.MailFolder, error) {
 	startTime := time.Now()
-	fmt.Printf("[DEBUG] 开始获取文件夹列表...\n")
+	log.Printf("[DEBUG] 开始获取文件夹列表...")
 
 	// 检查服务器是否支持 LIST-STATUS 扩展
 	caps := client.Caps()
 	supportsListStatus := caps.Has(imap.CapListStatus)
-	fmt.Printf("[DEBUG] 服务器支持 LIST-STATUS: %v\n", supportsListStatus)
+	log.Printf("[DEBUG] 服务器支持 LIST-STATUS: %v", supportsListStatus)
 
-	// 注意：即使服务器支持 LIST-STATUS，某些服务器（如网易）响应也很慢
-	// 所以我们不请求状态信息，只获取文件夹列表
-	// 邮件数量可以在用户选择文件夹后再获取
-	fmt.Printf("[DEBUG] 发送 LIST 命令...\n")
-	listCmd := client.List("", "*", nil)
+	// 构建 LIST 命令选项
+	var listOpts *imap.ListOptions
+	if supportsListStatus {
+		// 如果支持 LIST-STATUS，请求邮件数量
+		listOpts = &imap.ListOptions{
+			ReturnStatus: &imap.StatusOptions{
+				NumMessages: true,
+				NumUnseen:   true,
+			},
+		}
+		log.Printf("[DEBUG] 发送 LIST-STATUS 命令...")
+	} else {
+		log.Printf("[DEBUG] 发送 LIST 命令...")
+	}
+	listCmd := client.List("", "*", listOpts)
 
 	var folders []*model.MailFolder
-	fmt.Printf("[DEBUG] 开始读取文件夹...\n")
+	log.Printf("[DEBUG] 开始读取文件夹...")
 	folderCount := 0
 	for {
 		mbox := listCmd.Next()
@@ -234,7 +252,7 @@ func ListMailboxes(client *imapclient.Client) ([]*model.MailFolder, error) {
 		folderCount++
 		// 减少日志输出，只在每10个文件夹时输出一次
 		if folderCount <= 5 || folderCount%10 == 0 {
-			fmt.Printf("[DEBUG] 发现文件夹 #%d: %s\n", folderCount, mbox.Mailbox)
+			log.Printf("[DEBUG] 发现文件夹 #%d: %s", folderCount, mbox.Mailbox)
 		}
 
 		folder := &model.MailFolder{
@@ -265,13 +283,46 @@ func ListMailboxes(client *imapclient.Client) ([]*model.MailFolder, error) {
 	}
 
 	elapsed := time.Since(startTime)
-	fmt.Printf("[DEBUG] 文件夹读取完成，共 %d 个，耗时 %.2fs\n", len(folders), elapsed.Seconds())
+	log.Printf("[DEBUG] 文件夹读取完成，共 %d 个，耗时 %.2fs", len(folders), elapsed.Seconds())
 
 	if err := listCmd.Close(); err != nil {
-		fmt.Printf("[DEBUG] LIST 命令关闭失败: %v\n", err)
+		log.Printf("[DEBUG] LIST 命令关闭失败: %v", err)
 		return nil, fmt.Errorf("获取文件夹列表失败: %w", err)
 	}
 
-	fmt.Printf("[DEBUG] 文件夹列表获取成功，总耗时 %.2fs\n", time.Since(startTime).Seconds())
+	log.Printf("[DEBUG] 文件夹列表获取成功，总耗时 %.2fs", time.Since(startTime).Seconds())
 	return folders, nil
+}
+
+// FolderStatusUpdate 文件夹状态更新
+type FolderStatusUpdate struct {
+	FolderPath   string `json:"folderPath"`
+	MessageCount uint32 `json:"messageCount"`
+	UnseenCount  uint32 `json:"unseenCount"`
+}
+
+// FetchFolderStatus 异步获取文件夹邮件数量，通过回调返回
+func FetchFolderStatus(client *imapclient.Client, folders []*model.MailFolder, onUpdate func(FolderStatusUpdate)) {
+	for _, folder := range folders {
+		if !folder.IsSelectable {
+			continue
+		}
+		statusCmd := client.Status(folder.FullPath, &imap.StatusOptions{
+			NumMessages: true,
+			NumUnseen:   true,
+		})
+		statusData, err := statusCmd.Wait()
+		if err != nil {
+			log.Printf("[DEBUG] 获取 %s 状态失败: %v", folder.FullPath, err)
+			continue
+		}
+		update := FolderStatusUpdate{FolderPath: folder.FullPath}
+		if statusData.NumMessages != nil {
+			update.MessageCount = *statusData.NumMessages
+		}
+		if statusData.NumUnseen != nil {
+			update.UnseenCount = *statusData.NumUnseen
+		}
+		onUpdate(update)
+	}
 }

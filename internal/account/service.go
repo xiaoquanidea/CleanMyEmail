@@ -98,7 +98,49 @@ func (s *Service) TestConnectionByID(accountID int64) error {
 
 // List 获取账号列表
 func (s *Service) List() ([]*model.AccountListItem, error) {
-	return db.ListAccounts()
+	accounts, err := db.ListAccounts()
+	if err != nil {
+		return nil, err
+	}
+
+	// 检查 OAuth2 账号的 token 状态
+	for _, account := range accounts {
+		if account.AuthType.IsOAuth2() {
+			warning := s.checkTokenWarning(account)
+			if warning != "" {
+				account.TokenWarning = warning
+			}
+		}
+	}
+
+	return accounts, nil
+}
+
+// checkTokenWarning 检查 token 警告状态
+func (s *Service) checkTokenWarning(account *model.AccountListItem) string {
+	token, err := db.GetTokenByAccountID(account.ID)
+	if err != nil || token == nil {
+		return ""
+	}
+
+	// 检查 token 状态
+	if token.AuthStatus == model.OAuth2StatusExpired {
+		return "Token已过期，请重新授权"
+	}
+
+	// 检查 Outlook 的 refresh token 是否即将过期（90天有效期，提前7天警告）
+	if account.Vendor == model.EmailVendorOutlook {
+		lifetime := account.Vendor.GetRefreshTokenLifetime()
+		if lifetime > 0 && token.CreatedAt.Add(lifetime).Before(time.Now().Add(7*24*time.Hour)) {
+			daysLeft := int(time.Until(token.CreatedAt.Add(lifetime)).Hours() / 24)
+			if daysLeft <= 0 {
+				return "Refresh Token已过期，请重新授权"
+			}
+			return fmt.Sprintf("Refresh Token将在%d天后过期，建议重新授权", daysLeft)
+		}
+	}
+
+	return ""
 }
 
 // Get 获取账号详情
@@ -134,6 +176,10 @@ func (s *Service) buildConnectConfig(account *model.EmailAccount) (*imap.Connect
 			return nil, fmt.Errorf("获取OAuth2 Token失败: %w", err)
 		}
 		cfg.AccessToken = accessToken
+		// 设置 token 刷新器，用于长时间任务中自动刷新 token
+		cfg.TokenRefresher = func() (string, error) {
+			return s.getOrRefreshAccessToken(account)
+		}
 	}
 
 	return cfg, nil

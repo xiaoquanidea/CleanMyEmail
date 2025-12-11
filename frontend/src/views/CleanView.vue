@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick, h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import {
@@ -196,6 +196,30 @@ const formatTimestamp = () => {
   return now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+// 格式化邮件数量
+const formatMessageCount = (count: number): string => {
+  if (count >= 10000) {
+    return `${(count / 10000).toFixed(1)}万`
+  } else if (count >= 1000) {
+    return `${(count / 1000).toFixed(1)}k`
+  }
+  return count.toString()
+}
+
+// 渲染文件夹后缀（邮件数量）
+const renderFolderSuffix = ({ option }: any) => {
+  if (option.messageCount > 0) {
+    return h('span', {
+      style: {
+        color: option.messageCount > 1000 ? '#f0a020' : '#999',
+        fontSize: '12px',
+        marginLeft: '4px'
+      }
+    }, `(${formatMessageCount(option.messageCount)}封)`)
+  }
+  return null
+}
+
 const handleBack = () => {
   router.push('/')
 }
@@ -353,17 +377,42 @@ const onError = (error: string) => {
   message.error(`清理失败: ${lastError.value}`)
 }
 
+// 处理文件夹状态更新（异步获取的邮件数量）
+interface FolderStatusUpdate {
+  folderPath: string
+  messageCount: number
+  unseenCount: number
+}
+
+const updateFolderStatus = (update: FolderStatusUpdate) => {
+  const updateNode = (nodes: FolderTreeNode[]): boolean => {
+    for (const node of nodes) {
+      if (node.fullPath === update.folderPath) {
+        node.messageCount = update.messageCount
+        return true
+      }
+      if (node.children && updateNode(node.children)) {
+        return true
+      }
+    }
+    return false
+  }
+  updateNode(folderTree.value)
+}
+
 onMounted(() => {
   loadFolders()
   EventsOn('clean:progress', onProgress)
   EventsOn('clean:complete', onComplete)
   EventsOn('clean:error', onError)
+  EventsOn('folder:status', updateFolderStatus)
 })
 
 onUnmounted(() => {
   EventsOff('clean:progress')
   EventsOff('clean:complete')
   EventsOff('clean:error')
+  EventsOff('folder:status')
 })
 </script>
 
@@ -423,7 +472,7 @@ onUnmounted(() => {
           key-field="key"
           label-field="label"
           children-field="children"
-          :render-suffix="({ option }: any) => option.messageCount > 0 ? ` (${option.messageCount})` : ''"
+          :render-suffix="renderFolderSuffix"
         />
       </n-scrollbar>
     </n-layout-sider>

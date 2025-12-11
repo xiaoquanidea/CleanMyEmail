@@ -50,6 +50,8 @@ type AccountListItem struct {
 	AuthType      EmailAuthType   `json:"authType"`
 	Status        AccountStatus   `json:"status"`
 	LastConnected *time.Time      `json:"lastConnected"`
+	// TokenWarning 表示 token 状态警告（如即将过期）
+	TokenWarning  string          `json:"tokenWarning,omitempty"`
 }
 
 // VendorInfo 厂商信息

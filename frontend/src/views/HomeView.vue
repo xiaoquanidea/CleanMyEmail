@@ -1,9 +1,11 @@
 <script lang="ts" setup>
-import { onMounted, computed } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { NLayout, NLayoutSider, NLayoutContent, NButton, NEmpty, NSpin, NCard, NTag, NSpace, NPopconfirm, NIcon } from 'naive-ui'
-import { Add, Trash, Mail, RefreshOutline, Settings, TimeOutline } from '@vicons/ionicons5'
+import { useMessage } from 'naive-ui'
+import { NLayout, NLayoutSider, NLayoutContent, NButton, NEmpty, NSpin, NCard, NTag, NSpace, NPopconfirm, NIcon, NTooltip } from 'naive-ui'
+import { Add, Trash, Mail, RefreshOutline, Settings, TimeOutline, KeyOutline, WarningOutline } from '@vicons/ionicons5'
 import { useAccountStore } from '../stores/account'
+import { StartOAuth2Auth, WaitOAuth2Callback, CancelOAuth2Auth } from '../../wailsjs/go/main/App'
 
 // 导入邮箱图标
 import gmailIcon from '../assets/icons/gmail.svg'
@@ -40,7 +42,9 @@ const getVendorIcon = (vendor: string) => {
 }
 
 const router = useRouter()
+const message = useMessage()
 const accountStore = useAccountStore()
+const reauthorizing = ref<number | null>(null)
 
 const statusTagType = (status: string) => {
   switch (status) {
@@ -58,6 +62,51 @@ const statusText = (status: string) => {
     case 'auth_required': return '需授权'
     default: return status
   }
+}
+
+// 判断是否需要显示重新授权按钮
+const needsReauth = (account: any) => {
+  return account.authType?.startsWith('oauth2') &&
+    (account.status === 'auth_required' || account.tokenWarning)
+}
+
+// 判断是否是 OAuth2 账号
+const isOAuth2Account = (account: any) => {
+  return account.authType?.startsWith('oauth2')
+}
+
+// 获取厂商名称用于 OAuth2
+const getVendorForOAuth2 = (vendor: string) => {
+  if (vendor === 'gmail') return 'gmail'
+  if (vendor === 'outlook') return 'outlook'
+  return ''
+}
+
+// 重新授权
+const handleReauthorize = async (account: any) => {
+  const vendor = getVendorForOAuth2(account.vendor)
+  if (!vendor) {
+    message.error('该账号不支持 OAuth2 授权')
+    return
+  }
+
+  reauthorizing.value = account.id
+  try {
+    await StartOAuth2Auth(vendor)
+    await WaitOAuth2Callback(vendor, account.email)
+    message.success('重新授权成功！')
+    accountStore.fetchAccounts()
+  } catch (error: any) {
+    message.error(`授权失败: ${error}`)
+  } finally {
+    reauthorizing.value = null
+  }
+}
+
+// 取消重新授权
+const handleCancelReauth = () => {
+  CancelOAuth2Auth()
+  reauthorizing.value = null
 }
 
 const handleAddAccount = () => {
@@ -128,28 +177,57 @@ onMounted(() => {
               size="small"
               hoverable
               class="account-card"
-              :class="{ active: accountStore.currentAccountId === account.id }"
+              :class="{ active: accountStore.currentAccountId === account.id, warning: account.tokenWarning }"
               @click="handleSelectAccount(account.id)"
             >
               <div class="account-row">
                 <img :src="getVendorIcon(account.vendor)" :alt="account.vendor" class="vendor-icon" />
                 <div class="account-info">
                   <div class="account-email">{{ account.email }}</div>
-                  <n-tag :type="statusTagType(account.status)" size="tiny">
-                    {{ statusText(account.status) }}
-                  </n-tag>
+                  <n-space :size="4" align="center">
+                    <n-tag :type="statusTagType(account.status)" size="tiny">
+                      {{ statusText(account.status) }}
+                    </n-tag>
+                    <!-- Token 警告提示 -->
+                    <n-tooltip v-if="account.tokenWarning" trigger="hover">
+                      <template #trigger>
+                        <n-icon color="#f0a020" size="14"><WarningOutline /></n-icon>
+                      </template>
+                      {{ account.tokenWarning }}
+                    </n-tooltip>
+                  </n-space>
                 </div>
                 <div class="account-actions" @click.stop>
-                  <n-popconfirm @positive-click="handleDeleteAccount(account.id)">
-                    <template #trigger>
-                      <n-button text type="error" size="small">
-                        <template #icon>
-                          <n-icon><Trash /></n-icon>
-                        </template>
-                      </n-button>
-                    </template>
-                    确定删除此账号吗？
-                  </n-popconfirm>
+                  <n-space :size="4">
+                    <!-- 重新授权按钮 -->
+                    <n-tooltip v-if="needsReauth(account)" trigger="hover">
+                      <template #trigger>
+                        <n-button
+                          text
+                          type="warning"
+                          size="small"
+                          :loading="reauthorizing === account.id"
+                          @click="handleReauthorize(account)"
+                        >
+                          <template #icon>
+                            <n-icon><KeyOutline /></n-icon>
+                          </template>
+                        </n-button>
+                      </template>
+                      重新授权
+                    </n-tooltip>
+                    <!-- 删除按钮 -->
+                    <n-popconfirm @positive-click="handleDeleteAccount(account.id)">
+                      <template #trigger>
+                        <n-button text type="error" size="small">
+                          <template #icon>
+                            <n-icon><Trash /></n-icon>
+                          </template>
+                        </n-button>
+                      </template>
+                      确定删除此账号吗？
+                    </n-popconfirm>
+                  </n-space>
                 </div>
               </div>
             </n-card>
@@ -175,7 +253,9 @@ onMounted(() => {
         </n-button>
       </div>
       <div class="copyright">
-        <p>© 2025 hutiquan | xiaoqunidea@163.com</p>
+        <p>© 2025 hutiquan | 海管家 · 订舱平台 | xiaoquanidea@163.com</p>
+        <p class="disclaimer">本项目纯用爱发电，免费开源。邮件删除不可恢复，使用者自行承担风险。</p>
+        <p class="disclaimer">所有数据都在用户端处理和存储，不上传云端</p>
       </div>
     </n-layout-content>
   </n-layout>
@@ -237,6 +317,11 @@ onMounted(() => {
 
 .account-card:hover {
   border-color: #18a058;
+}
+
+.account-card.warning {
+  border-color: #f0a020;
+  background: #fffbe6;
 }
 
 .account-card.active {
@@ -308,5 +393,11 @@ onMounted(() => {
 
 .copyright p {
   margin: 0;
+}
+
+.copyright .disclaimer {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #bbb;
 }
 </style>

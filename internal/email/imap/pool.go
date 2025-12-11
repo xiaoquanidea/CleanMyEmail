@@ -174,6 +174,14 @@ func (p *ConnectionPool) Get(ctx context.Context) (*PooledConn, error) {
 			p.creating++
 			p.mu.Unlock()
 
+			// 如果有 token 刷新器，先尝试刷新 token
+			if p.config.AuthType.IsOAuth2() && p.config.TokenRefresher != nil {
+				if newToken, err := p.config.TokenRefresher(); err == nil && newToken != "" {
+					p.config.AccessToken = newToken
+					log.Printf("[DEBUG] %s Token 已刷新", p.logPrefix)
+				}
+			}
+
 			// 创建新连接（不持有锁）
 			client, err := Connect(p.config)
 
