@@ -6,7 +6,7 @@ import (
 
 	"CleanMyEmail/internal/config"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 var (
@@ -21,7 +21,7 @@ func GetDB() (*sql.DB, error) {
 		if err = config.EnsureDataDir(); err != nil {
 			return
 		}
-		db, err = sql.Open("sqlite3", config.GetDBPath())
+		db, err = sql.Open("sqlite", config.GetDBPath())
 		if err != nil {
 			return
 		}
