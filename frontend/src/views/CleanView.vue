@@ -5,9 +5,9 @@ import { useMessage } from 'naive-ui'
 import {
   NLayout, NLayoutSider, NLayoutContent, NCard, NButton, NSpace, NTree, NDatePicker,
   NCheckbox, NProgress, NIcon, NTag, NSpin, NAlert, NScrollbar, NInputNumber, NInput,
-  NSelect, NCollapse, NCollapseItem, NModal, NResult, NSkeleton, NText
+  NSelect, NCollapse, NCollapseItem, NModal, NResult, NSkeleton, NText, NPopover
 } from 'naive-ui'
-import { ArrowBack, Trash, RefreshOutline } from '@vicons/ionicons5'
+import { ArrowBack, Trash, RefreshOutline, HelpCircleOutline } from '@vicons/ionicons5'
 import { StartClean, CancelClean, GetAccount } from '../../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 import { useAccountStore } from '../stores/account'
@@ -621,6 +621,34 @@ onUnmounted(() => {
                 :disabled="cleaning"
                 style="width: 160px;"
               />
+              <n-popover trigger="hover" placement="bottom" :width="320">
+                <template #trigger>
+                  <n-button size="small" class="help-btn">
+                    <template #icon>
+                      <n-icon :size="16"><HelpCircleOutline /></n-icon>
+                    </template>
+                    注意事项
+                  </n-button>
+                </template>
+                <div class="imap-tip">
+                  <div class="tip-title">⚠️ IMAP 同步限制说明</div>
+                  <div class="tip-content">
+                    <p>清理功能依赖 IMAP 协议，请确保：</p>
+                    <ul>
+                      <li><strong>已开启 IMAP 功能</strong>：在邮箱网页版设置中开启</li>
+                      <li><strong>日期范围在同步范围内</strong>：部分邮箱限制 IMAP 同步的时间范围</li>
+                    </ul>
+                    <div class="tip-examples">
+                      <div class="example-title">常见邮箱限制：</div>
+                      <div class="example-item">• QQ邮箱：默认同步最近 <strong>30天</strong>（可在设置中调整）</div>
+                      <div class="example-item">• 163邮箱：默认同步 <strong>全部</strong> 邮件</div>
+                      <div class="example-item">• Gmail：默认同步 <strong>全部</strong> 邮件</div>
+                      <div class="example-item">• Outlook：默认同步最近 <strong>1个月</strong>（可调整）</div>
+                    </div>
+                    <p class="tip-note">超出同步范围的邮件无法通过本工具删除，请先调整邮箱 IMAP 设置。</p>
+                  </div>
+                </div>
+              </n-popover>
             </div>
 
             <!-- 高级筛选 -->
@@ -896,5 +924,86 @@ onUnmounted(() => {
   white-space: nowrap;
   color: #606266;
   font-size: 13px;
+}
+
+.help-btn {
+  margin-left: 8px;
+  color: #f0a020;
+  background: rgba(240, 160, 32, 0.1);
+  border: 1px solid rgba(240, 160, 32, 0.3);
+  animation: helpPulse 2s ease-in-out infinite;
+}
+
+.help-btn:hover {
+  color: #fff;
+  background: #f0a020;
+  animation: none;
+}
+
+@keyframes helpPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(240, 160, 32, 0.4);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(240, 160, 32, 0);
+    transform: scale(1.1);
+  }
+}
+
+.imap-tip {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.imap-tip .tip-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 8px;
+  color: #333;
+}
+
+.imap-tip .tip-content p {
+  margin: 0 0 8px 0;
+  color: #666;
+}
+
+.imap-tip .tip-content ul {
+  margin: 0 0 12px 0;
+  padding-left: 20px;
+}
+
+.imap-tip .tip-content li {
+  margin-bottom: 4px;
+  color: #666;
+}
+
+.imap-tip .tip-examples {
+  background: #f9f9f9;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.imap-tip .example-title {
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 6px;
+}
+
+.imap-tip .example-item {
+  color: #666;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.imap-tip .example-item strong {
+  color: #18a058;
+}
+
+.imap-tip .tip-note {
+  margin: 0;
+  font-size: 12px;
+  color: #f0a020;
 }
 </style>
