@@ -52,6 +52,8 @@ const oauth2Config = ref({
   clientId: '',
   clientSecret: ''
 })
+// 保存当前 OAuth2 会话的 state
+const currentOAuth2State = ref('')
 
 const formData = ref({
   vendor: '',
@@ -136,10 +138,12 @@ const handleOAuth2Auth = async () => {
   oauth2Waiting.value = true
   try {
     // 开始授权流程（会自动打开浏览器）
-    await StartOAuth2Auth(formData.value.vendor)
+    const result = await StartOAuth2Auth(formData.value.vendor)
+    // 保存 state 用于后续匹配
+    currentOAuth2State.value = result.state
 
-    // 等待回调
-    await WaitOAuth2Callback(formData.value.vendor, formData.value.email)
+    // 等待回调（传入 state 而不是 vendor）
+    await WaitOAuth2Callback(result.state, formData.value.email)
 
     message.success('授权成功，账号已添加！')
     router.push('/')
@@ -147,13 +151,17 @@ const handleOAuth2Auth = async () => {
     message.error(`授权失败: ${error}`)
   } finally {
     oauth2Waiting.value = false
+    currentOAuth2State.value = ''
   }
 }
 
 // 取消 OAuth2 授权
 const handleCancelOAuth2 = () => {
-  CancelOAuth2Auth()
+  if (currentOAuth2State.value) {
+    CancelOAuth2Auth(currentOAuth2State.value)
+  }
   oauth2Waiting.value = false
+  currentOAuth2State.value = ''
 }
 
 // 密码模式：测试连接
@@ -221,8 +229,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   // 组件卸载时取消可能正在进行的 OAuth2 授权
-  if (oauth2Waiting.value) {
-    CancelOAuth2Auth()
+  if (oauth2Waiting.value && currentOAuth2State.value) {
+    CancelOAuth2Auth(currentOAuth2State.value)
   }
 })
 </script>

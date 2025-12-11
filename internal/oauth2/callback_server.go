@@ -3,6 +3,7 @@ package oauth2
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -16,20 +17,21 @@ type CallbackResult struct {
 	Error string
 }
 
-// CallbackServer 本地OAuth2回调服务器
+// CallbackServer 本地OAuth2回调服务器（支持多个并发OAuth2会话）
 type CallbackServer struct {
-	server     *http.Server
-	listener   net.Listener
-	port       int
-	resultChan chan CallbackResult
-	mu         sync.Mutex
-	running    bool
+	server   *http.Server
+	listener net.Listener
+	port     int
+	mu       sync.Mutex
+	running  bool
+	// 使用 state 作为 key 存储每个会话的结果通道
+	sessions map[string]chan CallbackResult
 }
 
 // NewCallbackServer 创建回调服务器
 func NewCallbackServer() *CallbackServer {
 	return &CallbackServer{
-		resultChan: make(chan CallbackResult, 1),
+		sessions: make(map[string]chan CallbackResult),
 	}
 }
 
@@ -67,13 +69,62 @@ func (s *CallbackServer) Start() (int, error) {
 		_ = s.server.Serve(listener)
 	}()
 
+	log.Printf("[INFO] OAuth2 回调服务器已启动，端口: %d", s.port)
 	return s.port, nil
 }
 
-// Stop 停止回调服务器
+// RegisterSession 注册一个新的 OAuth2 会话
+func (s *CallbackServer) RegisterSession(state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions[state] = make(chan CallbackResult, 1)
+	log.Printf("[DEBUG] 注册 OAuth2 会话: %s", state)
+}
+
+// UnregisterSession 注销一个 OAuth2 会话
+func (s *CallbackServer) UnregisterSession(state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ch, ok := s.sessions[state]; ok {
+		close(ch)
+		delete(s.sessions, state)
+		log.Printf("[DEBUG] 注销 OAuth2 会话: %s", state)
+	}
+}
+
+// Stop 停止回调服务器（仅当没有活跃会话时）
 func (s *CallbackServer) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if !s.running {
+		return
+	}
+
+	// 如果还有活跃会话，不停止服务器
+	if len(s.sessions) > 0 {
+		log.Printf("[DEBUG] 还有 %d 个活跃 OAuth2 会话，保持服务器运行", len(s.sessions))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_ = s.server.Shutdown(ctx)
+	s.running = false
+	log.Printf("[INFO] OAuth2 回调服务器已停止")
+}
+
+// ForceStop 强制停止回调服务器（清理所有会话）
+func (s *CallbackServer) ForceStop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 关闭所有会话通道
+	for state, ch := range s.sessions {
+		close(ch)
+		delete(s.sessions, state)
+	}
 
 	if !s.running {
 		return
@@ -84,6 +135,7 @@ func (s *CallbackServer) Stop() {
 
 	_ = s.server.Shutdown(ctx)
 	s.running = false
+	log.Printf("[INFO] OAuth2 回调服务器已强制停止")
 }
 
 // GetRedirectURI 获取回调地址（使用 localhost，Microsoft 要求）
@@ -91,10 +143,21 @@ func (s *CallbackServer) GetRedirectURI() string {
 	return fmt.Sprintf("http://localhost:%d/", s.port)
 }
 
-// WaitForCallback 等待回调结果
-func (s *CallbackServer) WaitForCallback(timeout time.Duration) (*CallbackResult, error) {
+// WaitForCallback 等待指定 state 的回调结果
+func (s *CallbackServer) WaitForCallback(state string, timeout time.Duration) (*CallbackResult, error) {
+	s.mu.Lock()
+	ch, ok := s.sessions[state]
+	s.mu.Unlock()
+
+	if !ok {
+		return nil, fmt.Errorf("未找到对应的 OAuth2 会话")
+	}
+
 	select {
-	case result := <-s.resultChan:
+	case result, ok := <-ch:
+		if !ok {
+			return nil, fmt.Errorf("OAuth2 会话已取消")
+		}
 		return &result, nil
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("等待授权超时")
@@ -108,6 +171,8 @@ func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) 
 	errMsg := r.URL.Query().Get("error")
 	errDesc := r.URL.Query().Get("error_description")
 
+	log.Printf("[DEBUG] 收到 OAuth2 回调, state: %s, hasCode: %v, error: %s", state, code != "", errMsg)
+
 	result := CallbackResult{
 		Code:  code,
 		State: state,
@@ -117,10 +182,21 @@ func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) 
 		result.Error = fmt.Sprintf("%s: %s", errMsg, errDesc)
 	}
 
-	// 发送结果
-	select {
-	case s.resultChan <- result:
-	default:
+	// 根据 state 找到对应的会话通道
+	s.mu.Lock()
+	ch, ok := s.sessions[state]
+	s.mu.Unlock()
+
+	if ok {
+		// 发送结果到对应的会话
+		select {
+		case ch <- result:
+			log.Printf("[DEBUG] 已发送回调结果到会话: %s", state)
+		default:
+			log.Printf("[WARN] 会话通道已满或已关闭: %s", state)
+		}
+	} else {
+		log.Printf("[WARN] 未找到匹配的 OAuth2 会话, state: %s", state)
 	}
 
 	// 返回成功页面
@@ -132,6 +208,12 @@ func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) 
 <p>%s</p>
 <p>请关闭此窗口并重试</p>
 </body></html>`, result.Error)
+	} else if !ok {
+		fmt.Fprint(w, `<!DOCTYPE html><html><head><title>授权失败</title></head>
+<body style="font-family: sans-serif; text-align: center; padding: 50px;">
+<h1 style="color: #e74c3c;">❌ 授权失败</h1>
+<p>未找到对应的授权会话，请重新发起授权</p>
+</body></html>`)
 	} else {
 		fmt.Fprint(w, `<!DOCTYPE html><html><head><title>授权成功</title></head>
 <body style="font-family: sans-serif; text-align: center; padding: 50px;">

@@ -15,9 +15,10 @@ import (
 var assets embed.FS
 
 // 版本信息，通过 ldflags 注入
+// 构建命令示例: wails build -ldflags "-X 'main.Version=1.0.1' -X 'main.BuildTime=2025-01-01 12:00:00'"
 var (
 	Version   = "1.0.0"
-	BuildTime = "unknown"
+	BuildTime = "dev"
 )
 
 func main() {

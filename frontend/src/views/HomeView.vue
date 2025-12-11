@@ -5,7 +5,7 @@ import { useMessage } from 'naive-ui'
 import { NLayout, NLayoutSider, NLayoutContent, NButton, NEmpty, NSpin, NCard, NTag, NSpace, NPopconfirm, NIcon, NTooltip } from 'naive-ui'
 import { Add, Trash, Mail, RefreshOutline, Settings, TimeOutline, KeyOutline, WarningOutline, SparklesOutline } from '@vicons/ionicons5'
 import { useAccountStore } from '../stores/account'
-import { StartOAuth2Auth, WaitOAuth2Callback, CancelOAuth2Auth, GetVersion } from '../../wailsjs/go/main/App'
+import { StartOAuth2Reauth, WaitOAuth2Callback, CancelOAuth2Auth, GetVersion } from '../../wailsjs/go/main/App'
 
 // 导入邮箱图标
 import gmailIcon from '../assets/icons/gmail.svg'
@@ -45,6 +45,7 @@ const router = useRouter()
 const message = useMessage()
 const accountStore = useAccountStore()
 const reauthorizing = ref<number | null>(null)
+const currentReauthState = ref('')  // 保存当前重新授权的 state
 const appVersion = ref('')
 
 const statusTagType = (status: string) => {
@@ -76,38 +77,37 @@ const isOAuth2Account = (account: any) => {
   return account.authType?.startsWith('oauth2')
 }
 
-// 获取厂商名称用于 OAuth2
-const getVendorForOAuth2 = (vendor: string) => {
-  if (vendor === 'gmail') return 'gmail'
-  if (vendor === 'outlook') return 'outlook'
-  return ''
-}
-
 // 重新授权
 const handleReauthorize = async (account: any) => {
-  const vendor = getVendorForOAuth2(account.vendor)
-  if (!vendor) {
+  if (!isOAuth2Account(account)) {
     message.error('该账号不支持 OAuth2 授权')
     return
   }
 
   reauthorizing.value = account.id
   try {
-    await StartOAuth2Auth(vendor)
-    await WaitOAuth2Callback(vendor, account.email)
+    // 使用专门的重新授权方法，传入账号ID
+    const result = await StartOAuth2Reauth(account.id)
+    currentReauthState.value = result.state
+    // 重新授权时 email 参数会被忽略，后端使用 session 中保存的
+    await WaitOAuth2Callback(result.state, '')
     message.success('重新授权成功！')
     accountStore.fetchAccounts()
   } catch (error: any) {
     message.error(`授权失败: ${error}`)
   } finally {
     reauthorizing.value = null
+    currentReauthState.value = ''
   }
 }
 
 // 取消重新授权
 const handleCancelReauth = () => {
-  CancelOAuth2Auth()
+  if (currentReauthState.value) {
+    CancelOAuth2Auth(currentReauthState.value)
+  }
   reauthorizing.value = null
+  currentReauthState.value = ''
 }
 
 const handleAddAccount = () => {

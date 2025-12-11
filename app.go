@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -19,6 +20,15 @@ import (
 	"CleanMyEmail/internal/service"
 )
 
+// OAuth2Session 存储单个 OAuth2 会话的状态
+type OAuth2Session struct {
+	Vendor    string
+	Config    *oauth2.Config
+	State     string
+	AccountID int64  // 如果是重新授权，存储账号ID；新建账号时为0
+	Email     string // 重新授权时的邮箱
+}
+
 // App struct
 type App struct {
 	ctx            context.Context
@@ -26,10 +36,11 @@ type App struct {
 	historyService *service.HistoryService
 	poolManager    *imap.PoolManager // 连接池管理器
 	currentCleaner *cleaner.Cleaner
-	// OAuth2 回调服务器
-	callbackServer    *oauth2.CallbackServer
-	pendingVendor     string
-	pendingOAuth2Cfg  *oauth2.Config // 保存 PKCE 的 code_verifier
+	// OAuth2 回调服务器（共享，支持多会话）
+	callbackServer *oauth2.CallbackServer
+	// OAuth2 会话管理（使用 state 作为 key）
+	oauth2Sessions   map[string]*OAuth2Session
+	oauth2SessionsMu sync.RWMutex
 }
 
 // NewApp creates a new App application struct
@@ -39,6 +50,7 @@ func NewApp() *App {
 		historyService: service.NewHistoryService(),
 		poolManager:    imap.NewPoolManager(),
 		callbackServer: oauth2.NewCallbackServer(),
+		oauth2Sessions: make(map[string]*OAuth2Session),
 	}
 }
 
@@ -60,6 +72,10 @@ func (a *App) startup(ctx context.Context) {
 
 // shutdown is called when the app is closing
 func (a *App) shutdown(ctx context.Context) {
+	// 强制停止 OAuth2 回调服务器
+	if a.callbackServer != nil {
+		a.callbackServer.ForceStop()
+	}
 	// 关闭连接池管理器
 	if a.poolManager != nil {
 		a.poolManager.Close()
@@ -224,15 +240,15 @@ type OAuth2AuthResult struct {
 	Port    int    `json:"port"`
 }
 
-// StartOAuth2Auth 开始OAuth2授权流程
-func (a *App) StartOAuth2Auth(vendor string) (*OAuth2AuthResult, error) {
+// startOAuth2Flow 内部方法：启动 OAuth2 流程（新建或重新授权共用）
+func (a *App) startOAuth2Flow(vendor string, accountID int64, email string) (*OAuth2AuthResult, error) {
 	// 获取OAuth2配置（只需要 ClientID）
 	dbConfig, err := db.GetOAuth2Config(vendor)
 	if err != nil || dbConfig == nil {
 		return nil, fmt.Errorf("请先配置 %s 的 OAuth2 Client ID", vendor)
 	}
 
-	// 启动回调服务器
+	// 启动回调服务器（如果已运行则复用）
 	port, err := a.callbackServer.Start()
 	if err != nil {
 		return nil, err
@@ -250,20 +266,37 @@ func (a *App) StartOAuth2Auth(vendor string) (*OAuth2AuthResult, error) {
 		// Microsoft 使用 PKCE，不需要 client_secret
 		cfg = oauth2.OutlookConfig(dbConfig.ClientID, redirectURI)
 	default:
-		a.callbackServer.Stop()
 		return nil, fmt.Errorf("不支持的OAuth2厂商: %s", vendor)
 	}
 
-	// 保存配置（包含 PKCE code_verifier，用于后续 ExchangeToken）
-	a.pendingOAuth2Cfg = cfg
-	a.pendingVendor = vendor
-
-	// 生成state并构建授权URL
+	// 生成 state 并注册会话
 	state := oauth2.GenerateState()
+
+	// 保存会话（使用 state 作为 key）
+	a.oauth2SessionsMu.Lock()
+	a.oauth2Sessions[state] = &OAuth2Session{
+		Vendor:    vendor,
+		Config:    cfg,
+		State:     state,
+		AccountID: accountID, // 0 表示新建账号，>0 表示重新授权
+		Email:     email,
+	}
+	a.oauth2SessionsMu.Unlock()
+
+	// 在回调服务器中注册此会话
+	a.callbackServer.RegisterSession(state)
+
+	// 构建授权URL
 	authURL := oauth2.BuildAuthURL(cfg, state)
 
 	// 打开浏览器
 	wailsRuntime.BrowserOpenURL(a.ctx, authURL)
+
+	if accountID > 0 {
+		log.Printf("[INFO] 开始 OAuth2 重新授权流程, vendor: %s, accountID: %d, state: %s", vendor, accountID, state)
+	} else {
+		log.Printf("[INFO] 开始 OAuth2 授权流程, vendor: %s, state: %s", vendor, state)
+	}
 
 	return &OAuth2AuthResult{
 		AuthURL: authURL,
@@ -272,21 +305,54 @@ func (a *App) StartOAuth2Auth(vendor string) (*OAuth2AuthResult, error) {
 	}, nil
 }
 
-// WaitOAuth2Callback 等待OAuth2回调并完成授权
-func (a *App) WaitOAuth2Callback(vendor, email string) (*model.EmailAccount, error) {
-	defer func() {
-		a.callbackServer.Stop()
-		a.pendingOAuth2Cfg = nil
-		a.pendingVendor = ""
-	}()
+// StartOAuth2Auth 开始OAuth2授权流程（新建账号）
+func (a *App) StartOAuth2Auth(vendor string) (*OAuth2AuthResult, error) {
+	return a.startOAuth2Flow(vendor, 0, "")
+}
 
-	// 检查是否有保存的配置（包含 PKCE code_verifier）
-	if a.pendingOAuth2Cfg == nil {
-		return nil, fmt.Errorf("OAuth2 授权流程未正确启动")
+// StartOAuth2Reauth 开始OAuth2重新授权流程（更新现有账号的token）
+func (a *App) StartOAuth2Reauth(accountID int64) (*OAuth2AuthResult, error) {
+	// 获取账号信息
+	account, err := db.GetAccountByID(accountID)
+	if err != nil {
+		return nil, fmt.Errorf("获取账号失败: %w", err)
+	}
+	if account == nil {
+		return nil, fmt.Errorf("账号不存在")
 	}
 
-	// 等待回调
-	result, err := a.callbackServer.WaitForCallback(5 * time.Minute)
+	// 确定 vendor
+	vendor := string(account.Vendor)
+	if vendor != "gmail" && vendor != "outlook" {
+		return nil, fmt.Errorf("该账号不支持 OAuth2 授权")
+	}
+
+	return a.startOAuth2Flow(vendor, accountID, account.Email)
+}
+
+// WaitOAuth2Callback 等待OAuth2回调并完成授权（需要传入 state 来匹配会话）
+// 对于新建账号，需要传入 email；对于重新授权，email 参数会被忽略（使用 session 中保存的）
+func (a *App) WaitOAuth2Callback(state, email string) (*model.EmailAccount, error) {
+	// 清理函数
+	defer func() {
+		a.oauth2SessionsMu.Lock()
+		delete(a.oauth2Sessions, state)
+		a.oauth2SessionsMu.Unlock()
+		a.callbackServer.UnregisterSession(state)
+		a.callbackServer.Stop() // 如果没有其他会话，会停止服务器
+	}()
+
+	// 获取会话
+	a.oauth2SessionsMu.RLock()
+	session, ok := a.oauth2Sessions[state]
+	a.oauth2SessionsMu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("OAuth2 授权流程未正确启动或已过期")
+	}
+
+	// 等待回调（使用 state 匹配）
+	result, err := a.callbackServer.WaitForCallback(state, 5*time.Minute)
 	if err != nil {
 		return nil, err
 	}
@@ -295,33 +361,66 @@ func (a *App) WaitOAuth2Callback(vendor, email string) (*model.EmailAccount, err
 		return nil, fmt.Errorf("授权失败: %s", result.Error)
 	}
 
+	// 验证 state 匹配
+	if result.State != state {
+		return nil, fmt.Errorf("授权状态不匹配，可能存在安全问题")
+	}
+
 	// 用授权码换取Token（使用保存的配置，包含 PKCE code_verifier）
-	tokenResp, err := oauth2.ExchangeToken(context.Background(), a.pendingOAuth2Cfg, result.Code)
+	tokenResp, err := oauth2.ExchangeToken(context.Background(), session.Config, result.Code)
 	if err != nil {
 		return nil, err
 	}
 
-	// 创建账号
-	vendorType := model.EmailVendorType(vendor)
-	acct := &model.EmailAccount{
-		Email:      email,
-		Vendor:     vendorType,
-		AuthType:   model.EmailAuthTypeOAuth2,
-		IMAPServer: vendorType.GetDefaultIMAPServer(),
-		Status:     model.AccountStatusActive,
+	var acct *model.EmailAccount
+	var accountID int64
+
+	// 判断是新建账号还是重新授权
+	if session.AccountID > 0 {
+		// 重新授权：更新现有账号的 token
+		accountID = session.AccountID
+		acct, err = db.GetAccountByID(accountID)
+		if err != nil {
+			return nil, fmt.Errorf("获取账号失败: %w", err)
+		}
+		if acct == nil {
+			return nil, fmt.Errorf("账号不存在")
+		}
+		// 更新账号状态为活跃
+		acct.Status = model.AccountStatusActive
+		if err := db.UpdateAccountStatus(accountID, model.AccountStatusActive); err != nil {
+			log.Printf("[WARN] 更新账号状态失败: %v", err)
+		}
+		log.Printf("[INFO] OAuth2 重新授权成功, vendor: %s, email: %s", session.Vendor, acct.Email)
+	} else {
+		// 新建账号：先检查邮箱是否已存在
+		existingAccount, _ := db.GetAccountByEmail(email)
+		if existingAccount != nil {
+			return nil, fmt.Errorf("该邮箱账号已存在，如需重新授权请在首页点击重新授权按钮")
+		}
+
+		vendorType := model.EmailVendorType(session.Vendor)
+		acct = &model.EmailAccount{
+			Email:      email,
+			Vendor:     vendorType,
+			AuthType:   model.EmailAuthTypeOAuth2,
+			IMAPServer: vendorType.GetDefaultIMAPServer(),
+			Status:     model.AccountStatusActive,
+		}
+
+		accountID, err = db.CreateAccount(acct)
+		if err != nil {
+			return nil, fmt.Errorf("创建账号失败: %w", err)
+		}
+		acct.ID = accountID
+		log.Printf("[INFO] OAuth2 授权成功, vendor: %s, email: %s", session.Vendor, email)
 	}
 
-	accountID, err := db.CreateAccount(acct)
-	if err != nil {
-		return nil, fmt.Errorf("创建账号失败: %w", err)
-	}
-	acct.ID = accountID
-
-	// 保存Token
+	// 保存/更新 Token
 	expiresAt := tokenResp.GetExpiresAt()
 	token := &model.OAuth2Token{
 		AccountID:    accountID,
-		Provider:     vendor,
+		Provider:     session.Vendor,
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		TokenType:    tokenResp.TokenType,
@@ -335,11 +434,14 @@ func (a *App) WaitOAuth2Callback(vendor, email string) (*model.EmailAccount, err
 	return acct, nil
 }
 
-// CancelOAuth2Auth 取消OAuth2授权
-func (a *App) CancelOAuth2Auth() {
+// CancelOAuth2Auth 取消指定的OAuth2授权
+func (a *App) CancelOAuth2Auth(state string) {
+	a.oauth2SessionsMu.Lock()
+	delete(a.oauth2Sessions, state)
+	a.oauth2SessionsMu.Unlock()
+	a.callbackServer.UnregisterSession(state)
 	a.callbackServer.Stop()
-	a.pendingOAuth2Cfg = nil
-	a.pendingVendor = ""
+	log.Printf("[INFO] 取消 OAuth2 授权, state: %s", state)
 }
 
 // OAuth2Config OAuth2配置
