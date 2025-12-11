@@ -321,6 +321,51 @@ func (p *ConnectionPool) UpdateConfig(config *ConnectConfig) {
 	p.config = config
 }
 
+// Resize 动态调整连接池大小
+// 如果新大小大于当前大小，扩容（允许创建更多连接）
+// 如果新大小小于当前大小，缩容（超出的空闲连接会被关闭）
+func (p *ConnectionPool) Resize(newSize int) {
+	if newSize <= 0 {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return
+	}
+
+	oldSize := p.maxSize
+	if newSize == oldSize {
+		return
+	}
+
+	p.maxSize = newSize
+	log.Printf("[DEBUG] %s 连接池大小调整: %d -> %d", p.logPrefix, oldSize, newSize)
+
+	// 如果缩容，关闭多余的空闲连接
+	if newSize < oldSize {
+		for i := len(p.connections) - 1; i >= 0 && len(p.connections) > newSize; i-- {
+			conn := p.connections[i]
+			if !conn.inUse {
+				conn.client.Close()
+				p.removeConnLocked(i)
+			}
+		}
+	}
+
+	// 通知等待的 goroutine（扩容后可能可以创建新连接了）
+	p.cond.Broadcast()
+}
+
+// MaxSize 获取当前连接池最大大小
+func (p *ConnectionPool) MaxSize() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxSize
+}
+
 // removeConnLocked 移除连接（需要持有锁）
 func (p *ConnectionPool) removeConnLocked(index int) {
 	if index < 0 || index >= len(p.connections) {

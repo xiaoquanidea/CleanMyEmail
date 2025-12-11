@@ -52,7 +52,7 @@ func (r *CleanRequest) GetBatchSize() int {
 // GetMaxConcurrency 获取最大并发数，使用默认值如果未设置
 func (r *CleanRequest) GetMaxConcurrency() int {
 	if r.MaxConcurrency <= 0 {
-		return 5
+		return 3 // 与连接池默认大小匹配，对邮件服务器友好
 	}
 	return r.MaxConcurrency
 }

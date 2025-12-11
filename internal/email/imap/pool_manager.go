@@ -40,6 +40,7 @@ func NewPoolManager() *PoolManager {
 }
 
 // GetPool 获取或创建账号的连接池
+// 如果请求的 MaxSize 大于当前池大小，会自动扩容
 func (pm *PoolManager) GetPool(accountID int64, config *ConnectConfig, opts *PoolOptions) *ConnectionPool {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -54,7 +55,19 @@ func (pm *PoolManager) GetPool(accountID int64, config *ConnectConfig, opts *Poo
 			mp.config.AccessToken = config.AccessToken
 			mp.config.TokenRefresher = config.TokenRefresher
 			mp.pool.UpdateConfig(config)
-			log.Printf("[DEBUG] %s 复用连接池", logPrefix)
+
+			// 检查是否需要扩容
+			if opts != nil && opts.MaxSize > 0 {
+				currentSize := mp.pool.MaxSize()
+				if opts.MaxSize > currentSize {
+					mp.pool.Resize(opts.MaxSize)
+					// Resize 内部已打印日志，这里不再重复
+				} else {
+					log.Printf("[DEBUG] %s 复用连接池 (大小: %d)", logPrefix, currentSize)
+				}
+			} else {
+				log.Printf("[DEBUG] %s 复用连接池", logPrefix)
+			}
 			return mp.pool
 		}
 		// 配置变化，关闭旧池
@@ -69,7 +82,7 @@ func (pm *PoolManager) GetPool(accountID int64, config *ConnectConfig, opts *Poo
 		config:     config,
 		lastAccess: time.Now(),
 	}
-	log.Printf("[DEBUG] %s 创建新连接池", logPrefix)
+	log.Printf("[DEBUG] %s 创建新连接池 (大小: %d)", logPrefix, pool.MaxSize())
 	return pool
 }
 

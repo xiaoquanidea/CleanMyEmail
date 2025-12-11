@@ -50,7 +50,7 @@ const previewOnly = ref(true)
 const startDate = ref<number | null>(null)
 const endDate = ref<number | null>(null)
 const batchSize = ref(500)
-const maxConcurrency = ref(5)
+const maxConcurrency = ref(3) // 与连接池默认大小匹配
 // 高级筛选条件
 const filterSender = ref('')
 const filterSubject = ref('')
@@ -741,7 +741,7 @@ onUnmounted(() => {
                     <n-input-number
                       v-model:value="maxConcurrency"
                       :min="1"
-                      :max="10"
+                      :max="8"
                       :disabled="cleaning"
                       style="width: 80px;"
                     />
