@@ -110,6 +110,18 @@ func (a *App) GetAccount(id int64) (*model.EmailAccount, error) {
 	return a.accountService.Get(id)
 }
 
+// GetAccountPassword 获取账号密码（仅密码认证类型）
+func (a *App) GetAccountPassword(id int64) (string, error) {
+	account, err := a.accountService.Get(id)
+	if err != nil {
+		return "", fmt.Errorf("获取账号失败: %w", err)
+	}
+	if account.AuthType.IsOAuth2() {
+		return "", fmt.Errorf("OAuth2 账号没有密码")
+	}
+	return account.Password, nil
+}
+
 // DeleteAccount 删除账号
 func (a *App) DeleteAccount(id int64) error {
 	return a.accountService.Delete(id)

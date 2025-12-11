@@ -3,9 +3,9 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { NLayout, NLayoutSider, NLayoutContent, NButton, NEmpty, NSpin, NCard, NTag, NSpace, NPopconfirm, NIcon, NTooltip, NModal, NInput, NForm, NFormItem } from 'naive-ui'
-import { Add, Trash, Mail, RefreshOutline, Settings, TimeOutline, KeyOutline, WarningOutline, SparklesOutline } from '@vicons/ionicons5'
+import { Add, Trash, Mail, RefreshOutline, Settings, TimeOutline, KeyOutline, WarningOutline, SparklesOutline, EyeOutline } from '@vicons/ionicons5'
 import { useAccountStore } from '../stores/account'
-import { StartOAuth2Reauth, WaitOAuth2Callback, CancelOAuth2Auth, GetVersion, UpdateAccountPassword } from '../../wailsjs/go/main/App'
+import { StartOAuth2Reauth, WaitOAuth2Callback, CancelOAuth2Auth, GetVersion, UpdateAccountPassword, GetAccountPassword } from '../../wailsjs/go/main/App'
 
 // 导入邮箱图标
 import gmailIcon from '../assets/icons/gmail.svg'
@@ -86,6 +86,28 @@ const showPasswordModal = ref(false)
 const passwordModalAccount = ref<any>(null)
 const newPassword = ref('')
 const updatingPassword = ref(false)
+
+// 查看密码相关
+const showViewPasswordModal = ref(false)
+const viewPasswordAccount = ref<any>(null)
+const viewPassword = ref('')
+const loadingPassword = ref(false)
+
+// 查看密码
+const handleViewPassword = async (account: any) => {
+  viewPasswordAccount.value = account
+  viewPassword.value = ''
+  showViewPasswordModal.value = true
+  loadingPassword.value = true
+  try {
+    viewPassword.value = await GetAccountPassword(account.id)
+  } catch (error: any) {
+    message.error(`获取密码失败: ${error}`)
+    showViewPasswordModal.value = false
+  } finally {
+    loadingPassword.value = false
+  }
+}
 
 // 重新授权
 const handleReauthorize = async (account: any) => {
@@ -254,6 +276,22 @@ onMounted(async () => {
                 </div>
                 <div class="account-actions" @click.stop>
                   <n-space :size="4">
+                    <!-- 查看密码按钮（仅密码账号） -->
+                    <n-tooltip v-if="!isOAuth2Account(account)" trigger="hover">
+                      <template #trigger>
+                        <n-button
+                          text
+                          type="info"
+                          size="small"
+                          @click="handleViewPassword(account)"
+                        >
+                          <template #icon>
+                            <n-icon><EyeOutline /></n-icon>
+                          </template>
+                        </n-button>
+                      </template>
+                      查看密码
+                    </n-tooltip>
                     <!-- 重新授权按钮 -->
                     <n-tooltip v-if="needsReauth(account)" trigger="hover">
                       <template #trigger>
@@ -384,6 +422,35 @@ onMounted(async () => {
           <n-button type="primary" :loading="updatingPassword" @click="handlePasswordSubmit">
             确认更新
           </n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <!-- 查看密码对话框 -->
+    <n-modal
+      v-model:show="showViewPasswordModal"
+      preset="card"
+      title="查看密码"
+      style="width: 400px;"
+    >
+      <n-spin :show="loadingPassword">
+        <n-form>
+          <n-form-item label="邮箱账号">
+            <n-input :value="viewPasswordAccount?.email" disabled />
+          </n-form-item>
+          <n-form-item label="密码/授权码">
+            <n-input
+              :value="viewPassword"
+              type="password"
+              show-password-on="click"
+              readonly
+            />
+          </n-form-item>
+        </n-form>
+      </n-spin>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showViewPasswordModal = false">关闭</n-button>
         </n-space>
       </template>
     </n-modal>
