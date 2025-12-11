@@ -61,7 +61,8 @@ jobs:
         run: |
           cd build/bin
           cp ../../scripts/fix-mac.sh ./
-          zip -r ${{ env.APP_NAME }}-${{ steps.version.outputs.VERSION }}-darwin-${{ matrix.arch }}.zip ${{ env.APP_NAME }}.app fix-mac.sh
+          cp ../../scripts/README-Mac.txt ./
+          zip -r ${{ env.APP_NAME }}-${{ steps.version.outputs.VERSION }}-darwin-${{ matrix.arch }}.zip ${{ env.APP_NAME }}.app fix-mac.sh README-Mac.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
