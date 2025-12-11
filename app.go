@@ -255,6 +255,7 @@ func (a *App) startOAuth2Flow(vendor string, accountID int64, email string) (*OA
 	}
 
 	redirectURI := a.callbackServer.GetRedirectURI()
+	log.Printf("[DEBUG] 回调服务器已启动, 端口: %d, redirectURI: %s", port, redirectURI)
 
 	// 根据厂商获取OAuth2配置
 	var cfg *oauth2.Config
@@ -271,6 +272,7 @@ func (a *App) startOAuth2Flow(vendor string, accountID int64, email string) (*OA
 
 	// 生成 state 并注册会话
 	state := oauth2.GenerateState()
+	log.Printf("[DEBUG] 生成 OAuth2 state: %s", state)
 
 	// 保存会话（使用 state 作为 key）
 	a.oauth2SessionsMu.Lock()
@@ -288,14 +290,15 @@ func (a *App) startOAuth2Flow(vendor string, accountID int64, email string) (*OA
 
 	// 构建授权URL
 	authURL := oauth2.BuildAuthURL(cfg, state)
+	log.Printf("[DEBUG] 构建授权 URL, vendor: %s, authURL长度: %d", vendor, len(authURL))
 
 	// 打开浏览器
 	wailsRuntime.BrowserOpenURL(a.ctx, authURL)
 
 	if accountID > 0 {
-		log.Printf("[INFO] 开始 OAuth2 重新授权流程, vendor: %s, accountID: %d, state: %s", vendor, accountID, state)
+		log.Printf("[INFO] 开始 OAuth2 重新授权流程, vendor: %s, accountID: %d, state: %s, redirectURI: %s", vendor, accountID, state, redirectURI)
 	} else {
-		log.Printf("[INFO] 开始 OAuth2 授权流程, vendor: %s, state: %s", vendor, state)
+		log.Printf("[INFO] 开始 OAuth2 授权流程, vendor: %s, state: %s, redirectURI: %s", vendor, state, redirectURI)
 	}
 
 	return &OAuth2AuthResult{
@@ -333,6 +336,8 @@ func (a *App) StartOAuth2Reauth(accountID int64) (*OAuth2AuthResult, error) {
 // WaitOAuth2Callback 等待OAuth2回调并完成授权（需要传入 state 来匹配会话）
 // 对于新建账号，需要传入 email；对于重新授权，email 参数会被忽略（使用 session 中保存的）
 func (a *App) WaitOAuth2Callback(state, email string) (*model.EmailAccount, error) {
+	log.Printf("[INFO] 开始等待 OAuth2 回调, state: %s, email: %s", state, email)
+
 	// 清理函数
 	defer func() {
 		a.oauth2SessionsMu.Lock()
@@ -340,6 +345,7 @@ func (a *App) WaitOAuth2Callback(state, email string) (*model.EmailAccount, erro
 		a.oauth2SessionsMu.Unlock()
 		a.callbackServer.UnregisterSession(state)
 		a.callbackServer.Stop() // 如果没有其他会话，会停止服务器
+		log.Printf("[DEBUG] 已清理 OAuth2 会话: %s", state)
 	}()
 
 	// 获取会话
@@ -348,29 +354,41 @@ func (a *App) WaitOAuth2Callback(state, email string) (*model.EmailAccount, erro
 	a.oauth2SessionsMu.RUnlock()
 
 	if !ok {
+		log.Printf("[ERROR] OAuth2 会话不存在或已过期, state: %s", state)
 		return nil, fmt.Errorf("OAuth2 授权流程未正确启动或已过期")
 	}
 
+	log.Printf("[DEBUG] 找到 OAuth2 会话, vendor: %s, state: %s", session.Vendor, state)
+
 	// 等待回调（使用 state 匹配）
+	log.Printf("[DEBUG] 等待回调结果, state: %s, 超时: 5分钟", state)
 	result, err := a.callbackServer.WaitForCallback(state, 5*time.Minute)
 	if err != nil {
+		log.Printf("[ERROR] 等待回调失败: %v, state: %s", err, state)
 		return nil, err
 	}
 
+	log.Printf("[DEBUG] 收到回调结果, state: %s, code长度: %d, error: %s", result.State, len(result.Code), result.Error)
+
 	if result.Error != "" {
+		log.Printf("[ERROR] OAuth2 授权错误: %s", result.Error)
 		return nil, fmt.Errorf("授权失败: %s", result.Error)
 	}
 
 	// 验证 state 匹配
 	if result.State != state {
+		log.Printf("[ERROR] State 不匹配, 期望: %s, 实际: %s", state, result.State)
 		return nil, fmt.Errorf("授权状态不匹配，可能存在安全问题")
 	}
 
 	// 用授权码换取Token（使用保存的配置，包含 PKCE code_verifier）
+	log.Printf("[DEBUG] 开始用授权码交换 Token, vendor: %s, redirectURI: %s", session.Vendor, session.Config.RedirectURI)
 	tokenResp, err := oauth2.ExchangeToken(context.Background(), session.Config, result.Code)
 	if err != nil {
+		log.Printf("[ERROR] Token 交换失败: %v, vendor: %s", err, session.Vendor)
 		return nil, err
 	}
+	log.Printf("[DEBUG] Token 交换成功, accessToken长度: %d, refreshToken长度: %d", len(tokenResp.AccessToken), len(tokenResp.RefreshToken))
 
 	var acct *model.EmailAccount
 	var accountID int64

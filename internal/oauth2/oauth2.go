@@ -8,12 +8,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"CleanMyEmail/internal/proxy"
 )
 
 // VendorType OAuth2厂商类型
@@ -168,42 +171,65 @@ func RefreshToken(ctx context.Context, cfg *Config, refreshToken string) (*Token
 	return requestToken(ctx, cfg.TokenURL, data)
 }
 
-// httpClient 禁用连接复用，避免 "Unsolicited response" 警告
-var httpClient = &http.Client{
-	Transport: &http.Transport{
+// getHTTPClient 获取 HTTP 客户端（支持代理）
+// 注意：每次调用都会创建新的客户端，因为代理设置可能会变化
+func getHTTPClient() *http.Client {
+	transport := &http.Transport{
 		DisableKeepAlives: true,
-	},
-	Timeout: 30 * time.Second,
+		// 使用标准的 Proxy 函数，支持 HTTP 和 SOCKS5 代理
+		Proxy: proxy.GetHTTPProxyFunc(),
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
 }
 
 func requestToken(ctx context.Context, tokenURL string, data url.Values) (*TokenResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
+		log.Printf("[ERROR] 创建 Token 请求失败: %v", err)
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := httpClient.Do(req)
+	// 获取支持代理的 HTTP 客户端
+	client := getHTTPClient()
+
+	// 记录请求信息（包含代理状态）
+	if proxy.IsEnabled() {
+		log.Printf("[DEBUG] 请求 Token (通过代理 %s): %s", proxy.GetProxyURL(), tokenURL)
+	} else {
+		log.Printf("[DEBUG] 请求 Token (直连): %s", tokenURL)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[ERROR] 请求 Token 失败: %v", err)
 		return nil, fmt.Errorf("请求Token失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("[ERROR] 读取 Token 响应失败: %v", err)
 		return nil, err
 	}
 
 	var tokenResp TokenResponse
 	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		log.Printf("[ERROR] 解析 Token 响应失败: %v", err)
 		return nil, fmt.Errorf("解析Token响应失败: %w", err)
 	}
 
 	if tokenResp.Error != "" {
+		log.Printf("[ERROR] OAuth2 错误: %s - %s", tokenResp.Error, tokenResp.ErrorDesc)
 		return nil, fmt.Errorf("OAuth2错误: %s - %s", tokenResp.Error, tokenResp.ErrorDesc)
 	}
 
 	if tokenResp.AccessToken == "" {
+		log.Printf("[ERROR] 未获取到 access_token")
 		return nil, fmt.Errorf("未获取到access_token")
 	}
 
@@ -211,6 +237,8 @@ func requestToken(ctx context.Context, tokenURL string, data url.Values) (*Token
 		tokenResp.TokenType = "Bearer"
 	}
 
+	log.Printf("[INFO] Token 获取成功, expiresIn: %ds, hasRefreshToken: %v",
+		tokenResp.ExpiresIn, tokenResp.RefreshToken != "")
+
 	return &tokenResp, nil
 }
-

@@ -3,6 +3,8 @@ package account
 import (
 	"context"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 
 	"CleanMyEmail/internal/db"
@@ -12,11 +14,20 @@ import (
 )
 
 // Service 账号服务
-type Service struct{}
+type Service struct {
+	// tokenRefreshMu 用于防止同一账号的 Token 被多个 goroutine 同时刷新
+	tokenRefreshMu sync.Map // map[int64]*sync.Mutex
+}
 
 // NewService 创建账号服务
 func NewService() *Service {
 	return &Service{}
+}
+
+// getAccountMutex 获取指定账号的互斥锁
+func (s *Service) getAccountMutex(accountID int64) *sync.Mutex {
+	mu, _ := s.tokenRefreshMu.LoadOrStore(accountID, &sync.Mutex{})
+	return mu.(*sync.Mutex)
 }
 
 // Create 创建账号
@@ -186,7 +197,9 @@ func (s *Service) buildConnectConfig(account *model.EmailAccount) (*imap.Connect
 }
 
 // getOrRefreshAccessToken 获取或刷新 access token
+// 使用互斥锁防止同一账号的 Token 被多个 goroutine 同时刷新
 func (s *Service) getOrRefreshAccessToken(account *model.EmailAccount) (string, error) {
+	// 先检查是否需要刷新（无锁快速路径）
 	token, err := db.GetTokenByAccountID(account.ID)
 	if err != nil {
 		return "", err
@@ -195,16 +208,38 @@ func (s *Service) getOrRefreshAccessToken(account *model.EmailAccount) (string, 
 		return "", fmt.Errorf("未找到OAuth2 Token，请重新授权")
 	}
 
-	// 检查是否需要刷新（提前5分钟刷新）
+	// 如果 Token 未过期，直接返回（无需加锁）
 	if token.ExpiresAt != nil && time.Until(*token.ExpiresAt) > 5*time.Minute {
 		return token.AccessToken, nil
 	}
 
-	// 需要刷新
+	// 需要刷新，获取账号级别的互斥锁
+	mu := s.getAccountMutex(account.ID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// 双重检查：获取锁后再次检查，可能其他 goroutine 已经刷新了
+	token, err = db.GetTokenByAccountID(account.ID)
+	if err != nil {
+		return "", err
+	}
+	if token == nil {
+		return "", fmt.Errorf("未找到OAuth2 Token，请重新授权")
+	}
+
+	// 再次检查是否需要刷新
+	if token.ExpiresAt != nil && time.Until(*token.ExpiresAt) > 5*time.Minute {
+		log.Printf("[DEBUG] Token 已被其他 goroutine 刷新, accountID: %d", account.ID)
+		return token.AccessToken, nil
+	}
+
+	// 确实需要刷新
 	if token.RefreshToken == "" {
 		db.UpdateTokenStatus(account.ID, model.OAuth2StatusExpired, "Refresh token不存在，需要重新授权")
 		return "", fmt.Errorf("Token已过期，请重新授权")
 	}
+
+	log.Printf("[DEBUG] 开始刷新 Token, accountID: %d, provider: %s", account.ID, token.Provider)
 
 	// 获取OAuth2配置
 	dbConfig, err := db.GetOAuth2Config(token.Provider)
@@ -245,6 +280,7 @@ func (s *Service) getOrRefreshAccessToken(account *model.EmailAccount) (string, 
 		return "", err
 	}
 
+	log.Printf("[INFO] Token 刷新成功, accountID: %d", account.ID)
 	return token.AccessToken, nil
 }
 
@@ -256,4 +292,3 @@ func (s *Service) GetConnectConfig(accountID int64) (*imap.ConnectConfig, error)
 	}
 	return s.buildConnectConfig(account)
 }
-
