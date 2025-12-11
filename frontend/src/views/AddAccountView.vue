@@ -78,6 +78,9 @@ const handleVendorSelect = async (vendor: string) => {
   if (v) {
     formData.value.imapServer = v.imapServer
   }
+  // 切换邮箱类型时清空输入，避免混淆
+  formData.value.email = ''
+  formData.value.password = ''
   testSuccess.value = false
 
   // 如果是 OAuth2 厂商，检查是否已配置
