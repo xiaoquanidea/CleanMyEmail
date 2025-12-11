@@ -93,8 +93,8 @@ package_release() {
     
     if [ "$platform" == "darwin" ]; then
         # macOS 使用 zip，包含修复脚本和说明文件
-        cp ../scripts/fix-mac.sh "${platform}-${arch}/"
-        cp ../scripts/README-Mac.txt "${platform}-${arch}/"
+        cp ../../scripts/fix-mac.sh "${platform}-${arch}/"
+        cp ../../scripts/README-Mac.txt "${platform}-${arch}/"
         zip -r "${archive_name}.zip" "${platform}-${arch}/${APP_NAME}.app" "${platform}-${arch}/fix-mac.sh" "${platform}-${arch}/README-Mac.txt"
     elif [ "$platform" == "windows" ]; then
         # Windows 使用 zip
