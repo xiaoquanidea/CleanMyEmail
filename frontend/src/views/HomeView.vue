@@ -2,10 +2,10 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
-import { NLayout, NLayoutSider, NLayoutContent, NButton, NEmpty, NSpin, NCard, NTag, NSpace, NPopconfirm, NIcon, NTooltip } from 'naive-ui'
+import { NLayout, NLayoutSider, NLayoutContent, NButton, NEmpty, NSpin, NCard, NTag, NSpace, NPopconfirm, NIcon, NTooltip, NModal, NInput, NForm, NFormItem } from 'naive-ui'
 import { Add, Trash, Mail, RefreshOutline, Settings, TimeOutline, KeyOutline, WarningOutline, SparklesOutline } from '@vicons/ionicons5'
 import { useAccountStore } from '../stores/account'
-import { StartOAuth2Reauth, WaitOAuth2Callback, CancelOAuth2Auth, GetVersion } from '../../wailsjs/go/main/App'
+import { StartOAuth2Reauth, WaitOAuth2Callback, CancelOAuth2Auth, GetVersion, UpdateAccountPassword } from '../../wailsjs/go/main/App'
 
 // 导入邮箱图标
 import gmailIcon from '../assets/icons/gmail.svg'
@@ -68,8 +68,12 @@ const statusText = (status: string) => {
 
 // 判断是否需要显示重新授权按钮
 const needsReauth = (account: any) => {
-  return account.authType?.startsWith('oauth2') &&
-    (account.status === 'auth_required' || account.tokenWarning)
+  // OAuth2 账号：状态为 auth_required 或有 token 警告
+  if (account.authType?.startsWith('oauth2')) {
+    return account.status === 'auth_required' || account.tokenWarning
+  }
+  // 密码账号：状态为 disconnected 或 auth_required
+  return account.status === 'disconnected' || account.status === 'auth_required'
 }
 
 // 判断是否是 OAuth2 账号
@@ -77,27 +81,54 @@ const isOAuth2Account = (account: any) => {
   return account.authType?.startsWith('oauth2')
 }
 
+// 密码重新授权相关
+const showPasswordModal = ref(false)
+const passwordModalAccount = ref<any>(null)
+const newPassword = ref('')
+const updatingPassword = ref(false)
+
 // 重新授权
 const handleReauthorize = async (account: any) => {
-  if (!isOAuth2Account(account)) {
-    message.error('该账号不支持 OAuth2 授权')
+  if (isOAuth2Account(account)) {
+    // OAuth2 账号：弹出浏览器授权
+    reauthorizing.value = account.id
+    try {
+      const result = await StartOAuth2Reauth(account.id)
+      currentReauthState.value = result.state
+      await WaitOAuth2Callback(result.state, '')
+      message.success('重新授权成功！')
+      accountStore.fetchAccounts()
+    } catch (error: any) {
+      message.error(`授权失败: ${error}`)
+    } finally {
+      reauthorizing.value = null
+      currentReauthState.value = ''
+    }
+  } else {
+    // 密码账号：弹出密码输入框
+    passwordModalAccount.value = account
+    newPassword.value = ''
+    showPasswordModal.value = true
+  }
+}
+
+// 提交新密码
+const handlePasswordSubmit = async () => {
+  if (!newPassword.value) {
+    message.warning('请输入新的授权码')
     return
   }
 
-  reauthorizing.value = account.id
+  updatingPassword.value = true
   try {
-    // 使用专门的重新授权方法，传入账号ID
-    const result = await StartOAuth2Reauth(account.id)
-    currentReauthState.value = result.state
-    // 重新授权时 email 参数会被忽略，后端使用 session 中保存的
-    await WaitOAuth2Callback(result.state, '')
-    message.success('重新授权成功！')
+    await UpdateAccountPassword(passwordModalAccount.value.id, newPassword.value)
+    message.success('授权码更新成功！')
+    showPasswordModal.value = false
     accountStore.fetchAccounts()
   } catch (error: any) {
-    message.error(`授权失败: ${error}`)
+    message.error(`更新失败: ${error}`)
   } finally {
-    reauthorizing.value = null
-    currentReauthState.value = ''
+    updatingPassword.value = false
   }
 }
 
@@ -323,6 +354,39 @@ onMounted(async () => {
         <p class="disclaimer">所有数据都在用户端处理和存储，不上传云端</p>
       </div>
     </n-layout-content>
+
+    <!-- 密码重新授权对话框 -->
+    <n-modal
+      v-model:show="showPasswordModal"
+      preset="card"
+      title="重新授权"
+      style="width: 400px;"
+      :mask-closable="!updatingPassword"
+      :closable="!updatingPassword"
+    >
+      <n-form>
+        <n-form-item label="邮箱账号">
+          <n-input :value="passwordModalAccount?.email" disabled />
+        </n-form-item>
+        <n-form-item label="新授权码">
+          <n-input
+            v-model:value="newPassword"
+            type="password"
+            show-password-on="click"
+            placeholder="请输入新的授权码或密码"
+            @keyup.enter="handlePasswordSubmit"
+          />
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <n-space justify="end">
+          <n-button :disabled="updatingPassword" @click="showPasswordModal = false">取消</n-button>
+          <n-button type="primary" :loading="updatingPassword" @click="handlePasswordSubmit">
+            确认更新
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </n-layout>
 </template>
 

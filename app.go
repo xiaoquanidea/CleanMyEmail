@@ -115,6 +115,35 @@ func (a *App) DeleteAccount(id int64) error {
 	return a.accountService.Delete(id)
 }
 
+// UpdateAccountPassword 更新账号密码/授权码
+func (a *App) UpdateAccountPassword(accountID int64, password string) error {
+	account, err := a.accountService.Get(accountID)
+	if err != nil {
+		return fmt.Errorf("获取账号失败: %w", err)
+	}
+
+	// 先测试新密码是否有效
+	testReq := &model.AccountCreateRequest{
+		Email:      account.Email,
+		Vendor:     account.Vendor,
+		AuthType:   account.AuthType,
+		Password:   password,
+		IMAPServer: account.IMAPServer,
+	}
+	if err := a.accountService.TestConnection(testReq); err != nil {
+		return fmt.Errorf("连接测试失败: %w", err)
+	}
+
+	// 更新密码
+	account.Password = password
+	account.Status = model.AccountStatusActive
+	if err := a.accountService.Update(account); err != nil {
+		return fmt.Errorf("更新账号失败: %w", err)
+	}
+
+	return nil
+}
+
 // ==================== 文件夹管理 ====================
 
 // GetFolderTree 获取文件夹树
